@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <title>司機助手一號</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #111;
+      color: white;
+      padding: 20px;
+    }
+
+    h1 {
+      font-size: 28px;
+    }
+
+    .card {
+      background: #1f1f1f;
+      padding: 20px;
+      border-radius: 16px;
+      margin-bottom: 16px;
+    }
+
+    input, button {
+      width: 100%;
+      padding: 14px;
+      margin-top: 10px;
+      border-radius: 10px;
+      border: none;
+      font-size: 18px;
+      box-sizing: border-box;
+    }
+
+    button {
+      background: #00c853;
+      color: white;
+      font-weight: bold;
+    }
+
+    .stop {
+      background: #d50000;
+    }
+
+    .status {
+      font-size: 18px;
+      margin-top: 12px;
+      line-height: 1.5;
+    }
+
+    .small {
+      color: #aaa;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>🚕 司機助手一號</h1>
+
+  <div class="card">
+    <div class="small">
+      請輸入車牌，按開始上線，並允許手機定位。
+    </div>
+
+    <input id="plate" placeholder="例如 8608 或 ABC-1234" />
+
+    <button onclick="startOnline()">開始上線</button>
+    <button class="stop" onclick="stopOnline()">停止上線</button>
+  </div>
+
+  <div class="card">
+    <div class="status" id="status">狀態：未上線</div>
+    <div class="status" id="gps">GPS：尚未取得</div>
+    <div class="status" id="accuracy">誤差：無</div>
+    <div class="status" id="time">最後更新：無</div>
+  </div>
+
+  <div class="card">
+    <div class="small">
+      注意：iPhone 鎖屏或切到背景後，網頁定位可能會暫停。測試時請先保持畫面開著。
+    </div>
+  </div>
+
+  <script>
+    let watchId = null;
+
+    let driverKey = localStorage.getItem("driverKey");
+
+    if (!driverKey) {
+      driverKey = "driver_" + Date.now() + "_" + Math.random().toString(36).slice(2);
+      localStorage.setItem("driverKey", driverKey);
+    }
+
+    const savedPlate = localStorage.getItem("plate");
+    if (savedPlate) {
+      document.getElementById("plate").value = savedPlate;
+    }
+
+    function setText(id, text) {
+      document.getElementById(id).innerText = text;
+    }
+
+    function startOnline() {
+      const plate = document.getElementById("plate").value.trim();
+
+      if (!plate) {
+        alert("請輸入車牌");
+        return;
+      }
+
+      localStorage.setItem("plate", plate);
+
+      if (!navigator.geolocation) {
+        alert("你的手機不支援 GPS 定位");
+        return;
+      }
+
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+
+      setText("status", "狀態：上線中，正在取得 GPS...");
+
+      watchId = navigator.geolocation.watchPosition(
+        async function (pos) {
+          const lat = pos.coords.latitude;
+          const lng = pos.coords.longitude;
+          const accuracy = pos.coords.accuracy;
+
+          setText("status", "狀態：上線中");
+          setText("gps", "GPS：" + lat.toFixed(6) + ", " + lng.toFixed(6));
+          setText("accuracy", "誤差：約 " + Math.round(accuracy) + " 公尺");
+
+          try {
+            const response = await fetch("/api/driver/location", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                driver_key: driverKey,
+                plate: plate,
+                lat: lat,
+                lng: lng,
+                accuracy: accuracy
+              })
+            });
+
+            const result = await response.json();
+
+            if (!result.ok) {
+              throw new Error(result.error || "更新失敗");
+            }
+
+            setText("time", "最後更新：" + new Date().toLocaleTimeString());
+          } catch (err) {
+            console.error(err);
+            setText("status", "狀態：位置上傳失敗");
+          }
+        },
+        function (err) {
+          console.error(err);
+          setText("status", "狀態：GPS 失敗，請允許定位");
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 5000,
+          timeout: 10000
+        }
+      );
+    }
+
+    async function stopOnline() {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+
+      try {
+        await fetch("/api/driver/offline", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            driver_key: driverKey
+          })
+        });
+      } catch (err) {
+        console.error(err);
+      }
+
+      setText("status", "狀態：已下線");
+    }
+  </script>
+</body>
+</html>
