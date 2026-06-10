@@ -105,6 +105,17 @@
       document.getElementById(id).innerText = text;
     }
 
+    function getAccuracyBufferMinutes(accuracyMeters) {
+  if (!accuracyMeters) return 1;
+
+  if (accuracyMeters <= 30) return 0;
+  if (accuracyMeters <= 100) return 1;
+  if (accuracyMeters <= 300) return 2;
+  if (accuracyMeters <= 800) return 3;
+
+  return 5;
+}
+
     function startOnline() {
       const plate = document.getElementById("plate").value.trim();
 
@@ -134,7 +145,20 @@
 
           setText("status", "狀態：上線中");
           setText("gps", "GPS：" + lat.toFixed(6) + ", " + lng.toFixed(6));
-          setText("accuracy", "誤差：約 " + Math.round(accuracy) + " 公尺");
+          const accuracyMeters = Math.round(accuracy);
+const bufferMinutes = getAccuracyBufferMinutes(accuracyMeters);
+
+let accuracyText = "誤差：約 " + accuracyMeters + " 公尺";
+
+if (accuracyMeters <= 100) {
+  accuracyText += "｜定位良好｜可放心報單";
+} else if (accuracyMeters <= 300) {
+  accuracyText += "｜定位普通｜建議多報 " + bufferMinutes + " 分";
+} else {
+  accuracyText += "｜定位偏差大｜不建議直接報單｜至少多報 " + bufferMinutes + " 分";
+}
+
+setText("accuracy", accuracyText);
 
           try {
             const response = await fetch("/api/driver/location", {
