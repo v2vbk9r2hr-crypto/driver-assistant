@@ -26,6 +26,31 @@ app.get("/", (req, res) => {
   res.redirect("/driver.html");
 });
 
+app.get("/api/driver-assistant/orders", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("driver_assistant_orders")
+      .select("*")
+      .eq("status", "open")
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    if (error) throw error;
+
+    res.json({
+      ok: true,
+      orders: data || []
+    });
+  } catch (err) {
+    console.error("get driver assistant orders error:", err);
+
+    res.status(500).json({
+      ok: false,
+      error: err.message
+    });
+  }
+});
+
 app.get("/health", (req, res) => {
   res.json({
     ok: true,

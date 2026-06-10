@@ -86,6 +86,11 @@
     </div>
   </div>
 
+  <div class="card">
+  <h2>🔥 可搶單</h2>
+  <div id="orders">尚未讀取單子...</div>
+</div>
+
   <script>
     let watchId = null;
 
@@ -221,6 +226,42 @@ setText("accuracy", accuracyText);
 
       setText("status", "狀態：已下線");
     }
+
+async function loadOpenOrders() {
+  try {
+    const response = await fetch("/api/driver-assistant/orders");
+    const result = await response.json();
+
+    const ordersDiv = document.getElementById("orders");
+
+    if (!result.ok) {
+      ordersDiv.innerText = "讀取單子失敗";
+      return;
+    }
+
+    if (!result.orders || result.orders.length === 0) {
+      ordersDiv.innerText = "目前沒有可搶單";
+      return;
+    }
+
+    ordersDiv.innerHTML = result.orders.map(order => {
+      return `
+        <div style="background:#2a2a2a;padding:14px;border-radius:12px;margin-top:12px;">
+          <div style="font-size:22px;font-weight:bold;">${order.order_code}</div>
+          <div style="margin-top:8px;">${order.address || order.raw_text}</div>
+          <div style="color:#aaa;margin-top:8px;">狀態：${order.status}</div>
+        </div>
+      `;
+    }).join("");
+  } catch (err) {
+    console.error(err);
+    document.getElementById("orders").innerText = "讀取單子錯誤";
+  }
+}
+
+loadOpenOrders();
+setInterval(loadOpenOrders, 3000);
+
   </script>
 </body>
 </html>
