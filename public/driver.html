@@ -259,6 +259,8 @@ const response = await fetch(url);
     }
 
 ordersDiv.innerHTML = result.orders.map(order => {
+const baseMinutes =
+    order.estimated_minutes || 5;
   return `
     <div style="background:#2a2a2a;padding:14px;border-radius:12px;margin-top:12px;">
       <div style="font-size:22px;font-weight:bold;">${order.order_code}</div>
@@ -267,16 +269,66 @@ ordersDiv.innerHTML = result.orders.map(order => {
         📍 距離：${order.distance_km ?? "未知"} km
       </div>
       <div style="color:#ffd54f;margin-top:6px;">
-        ⏱ 建議：約 ${order.estimated_minutes ?? "未知"} 分鐘
-      </div>
-      <div style="color:#aaa;margin-top:8px;">狀態：${order.status}</div>
-    </div>
+  ⏱ 建議：約 ${order.estimated_minutes ?? "未知"} 分鐘
+</div>
+<div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+<button onclick="reportAndOpenLine('${order.order_code}','${order.address || order.raw_text}',${baseMinutes})">
+實際 ${baseMinutes}分
+</button>
+<button onclick="reportAndOpenLine('${order.order_code}','${order.address || order.raw_text}',${baseMinutes + 2})">
++2分 ${baseMinutes + 2}分
+</button>
+<button onclick="reportAndOpenLine('${order.order_code}','${order.address || order.raw_text}',${baseMinutes + 5})">
++5分 ${baseMinutes + 5}分
+</button>
+<button onclick="reportAndOpenLine('${order.order_code}','${order.address || order.raw_text}',${baseMinutes + 9})">
++9分 ${baseMinutes + 9}分
+</button>
+</div>
+<div style="color:#aaa;margin-top:8px;">
+  狀態：${order.status}
+</div>
+</div>
   `;
 }).join("");
 
   } catch (err) {
     console.error(err);
     document.getElementById("orders").innerText = "讀取單子錯誤";
+  }
+}
+
+async function reportAndOpenLine(
+  orderCode,
+  address,
+  minutes
+) {
+  const plate =
+    document.getElementById("plate").value.trim();
+
+  if (!plate) {
+    alert("請先輸入車牌");
+    return;
+  }
+
+  const reportText =
+`${orderCode}/${address}
+${plate}
+${minutes}`;
+
+  try {
+    await navigator.clipboard.writeText(
+      reportText
+    );
+
+    alert(
+      `已複製報單\n${minutes}分鐘\n\n跳轉LINE後直接貼上送出`
+    );
+
+    window.location.href = "line://";
+  } catch (err) {
+    console.error(err);
+    alert(reportText);
   }
 }
 
