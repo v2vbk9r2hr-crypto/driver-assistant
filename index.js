@@ -64,7 +64,7 @@ app.get("/api/driver-assistant/orders", async (req, res) => {
     const { data, error } = await supabase
       .from("driver_assistant_orders")
       .select("*")
-      .eq("status", "open")
+      .in("status", ["open", "assigned"])
       .order("created_at", { ascending: false })
       .limit(50);
 

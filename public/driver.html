@@ -288,6 +288,11 @@ const baseMinutes =
 <div style="color:#aaa;margin-top:8px;">
   狀態：${order.status}
 </div>
+${order.status === "assigned" ? `
+  <button onclick="openNavigation('${order.address || order.raw_text}')">
+    🧭 一鍵導航
+  </button>
+` : ""}
 </div>
   `;
 }).join("");
@@ -335,6 +340,15 @@ ${minutes}`;
     console.error(err);
     alert(reportText);
   }
+}
+
+function openNavigation(address) {
+  const url =
+    "https://www.google.com/maps/dir/?api=1&destination=" +
+    encodeURIComponent(address) +
+    "&travelmode=driving";
+
+  window.open(url, "_blank");
 }
 
 loadOpenOrders();
