@@ -22,12 +22,45 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+function getDistanceKm(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) *
+    Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng / 2) *
+    Math.sin(dLng / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return R * c;
+}
+
+function estimateMinutes(distanceKm) {
+  if (!Number.isFinite(distanceKm)) return null;
+
+  const minutes = Math.ceil(distanceKm / 0.45);
+
+  return Math.max(1, minutes);
+}
+
 app.get("/", (req, res) => {
   res.redirect("/driver.html");
 });
 
 app.get("/api/driver-assistant/orders", async (req, res) => {
   try {
+    const driverLat = Number(req.query.lat);
+    const driverLng = Number(req.query.lng);
+
+    const hasDriverLocation =
+      Number.isFinite(driverLat) &&
+      Number.isFinite(driverLng);
+
     const { data, error } = await supabase
       .from("driver_assistant_orders")
       .select("*")
@@ -37,9 +70,49 @@ app.get("/api/driver-assistant/orders", async (req, res) => {
 
     if (error) throw error;
 
+    let orders = data || [];
+
+    if (hasDriverLocation) {
+      orders = orders.map(order => {
+        const pickupLat = Number(order.pickup_lat);
+        const pickupLng = Number(order.pickup_lng);
+
+        if (
+          !Number.isFinite(pickupLat) ||
+          !Number.isFinite(pickupLng)
+        ) {
+          return {
+            ...order,
+            distance_km: null,
+            estimated_minutes: null
+          };
+        }
+
+        const distanceKm = getDistanceKm(
+          driverLat,
+          driverLng,
+          pickupLat,
+          pickupLng
+        );
+
+        return {
+          ...order,
+          distance_km: Number(distanceKm.toFixed(2)),
+          estimated_minutes: estimateMinutes(distanceKm)
+        };
+      });
+
+      orders.sort((a, b) => {
+        if (a.distance_km == null) return 1;
+        if (b.distance_km == null) return -1;
+        return a.distance_km - b.distance_km;
+      });
+    }
+
     res.json({
       ok: true,
-      orders: data || []
+      has_driver_location: hasDriverLocation,
+      orders
     });
   } catch (err) {
     console.error("get driver assistant orders error:", err);
