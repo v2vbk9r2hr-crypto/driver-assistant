@@ -147,6 +147,12 @@
           const lat = pos.coords.latitude;
           const lng = pos.coords.longitude;
           const accuracy = pos.coords.accuracy;
+          window.currentDriverLocation = {
+  lat: lat,
+  lng: lng,
+  accuracy: accuracy,
+  updatedAt: new Date().toISOString()
+};
 
           setText("status", "狀態：上線中");
           setText("gps", "GPS：" + lat.toFixed(6) + ", " + lng.toFixed(6));
@@ -229,7 +235,15 @@ setText("accuracy", accuracyText);
 
 async function loadOpenOrders() {
   try {
-    const response = await fetch("/api/driver-assistant/orders");
+   let url = "/api/driver-assistant/orders";
+
+   if (window.currentDriverLocation) {
+    url +=
+    "?lat=" + window.currentDriverLocation.lat +
+    "&lng=" + window.currentDriverLocation.lng;
+}
+
+const response = await fetch(url);
     const result = await response.json();
 
     const ordersDiv = document.getElementById("orders");
@@ -244,15 +258,22 @@ async function loadOpenOrders() {
       return;
     }
 
-    ordersDiv.innerHTML = result.orders.map(order => {
-      return `
-        <div style="background:#2a2a2a;padding:14px;border-radius:12px;margin-top:12px;">
-          <div style="font-size:22px;font-weight:bold;">${order.order_code}</div>
-          <div style="margin-top:8px;">${order.address || order.raw_text}</div>
-          <div style="color:#aaa;margin-top:8px;">狀態：${order.status}</div>
-        </div>
-      `;
-    }).join("");
+ordersDiv.innerHTML = result.orders.map(order => {
+  return `
+    <div style="background:#2a2a2a;padding:14px;border-radius:12px;margin-top:12px;">
+      <div style="font-size:22px;font-weight:bold;">${order.order_code}</div>
+      <div style="margin-top:8px;">${order.address || order.raw_text}</div>
+      <div style="color:#00e676;margin-top:8px;">
+        📍 距離：${order.distance_km ?? "未知"} km
+      </div>
+      <div style="color:#ffd54f;margin-top:6px;">
+        ⏱ 建議：約 ${order.estimated_minutes ?? "未知"} 分鐘
+      </div>
+      <div style="color:#aaa;margin-top:8px;">狀態：${order.status}</div>
+    </div>
+  `;
+}).join("");
+
   } catch (err) {
     console.error(err);
     document.getElementById("orders").innerText = "讀取單子錯誤";
