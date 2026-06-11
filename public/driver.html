@@ -311,8 +311,13 @@ async function reportAndOpenLine(
     return;
   }
 
-  const reportText =
-`${orderCode}/${address}
+const fixedCode =
+  orderCode.startsWith("#")
+    ? orderCode
+    : "#" + orderCode;
+
+const reportText =
+`${fixedCode}/${address}
 ${plate}
 ${minutes}`;
 
