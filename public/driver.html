@@ -238,9 +238,10 @@ async function loadOpenOrders() {
    let url = "/api/driver-assistant/orders";
 
    if (window.currentDriverLocation) {
-    url +=
-    "?lat=" + window.currentDriverLocation.lat +
-    "&lng=" + window.currentDriverLocation.lng;
+url +=
+  "?lat=" + window.currentDriverLocation.lat +
+  "&lng=" + window.currentDriverLocation.lng +
+  "&accuracy=" + window.currentDriverLocation.accuracy;
 }
 
 const response = await fetch(url);
@@ -269,7 +270,9 @@ const baseMinutes =
         📍 距離：${order.distance_km ?? "未知"} km
       </div>
       <div style="color:#ffd54f;margin-top:6px;">
-  ⏱ 建議：約 ${order.estimated_minutes ?? "未知"} 分鐘
+  🚦 路況：約 ${order.traffic_minutes ?? "未知"} 分鐘
+<br>
+⏱ 建議報：${order.estimated_minutes ?? "未知"} 分鐘
 </div>
 <div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
 <button onclick="reportAndOpenLine('${order.order_code}','${order.address || order.raw_text}',${baseMinutes})">

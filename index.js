@@ -22,6 +22,48 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+async function getTrafficMinutes(originLat, originLng, destLat, destLng) {
+  if (!process.env.GOOGLE_MAPS_API_KEY) return null;
+
+  const url =
+    "https://maps.googleapis.com/maps/api/distancematrix/json" +
+    "?origins=" + originLat + "," + originLng +
+    "&destinations=" + destLat + "," + destLng +
+    "&mode=driving" +
+    "&departure_time=now" +
+    "&language=zh-TW" +
+    "&region=tw" +
+    "&key=" + process.env.GOOGLE_MAPS_API_KEY;
+
+  const response = await fetch(url);
+  const result = await response.json();
+
+  const element = result.rows?.[0]?.elements?.[0];
+
+  if (!element || element.status !== "OK") {
+    console.error("Distance Matrix failed:", result.status, element?.status);
+    return null;
+  }
+
+  const seconds =
+    element.duration_in_traffic?.value ||
+    element.duration?.value;
+
+  return Math.ceil(seconds / 60);
+}
+
+function getSafeReportMinutes(trafficMinutes, accuracyMeters) {
+  if (!trafficMinutes) return null;
+
+  let buffer = 1;
+
+  if (accuracyMeters > 100) buffer += 1;
+  if (accuracyMeters > 300) buffer += 2;
+  if (accuracyMeters > 800) buffer += 4;
+
+  return trafficMinutes + buffer;
+}
+
 function getDistanceKm(lat1, lng1, lat2, lng2) {
   const R = 6371;
 
@@ -56,6 +98,7 @@ app.get("/api/driver-assistant/orders", async (req, res) => {
   try {
     const driverLat = Number(req.query.lat);
     const driverLng = Number(req.query.lng);
+    const accuracy = Number(req.query.accuracy || 0);
 
     const hasDriverLocation =
       Number.isFinite(driverLat) &&
@@ -73,34 +116,47 @@ app.get("/api/driver-assistant/orders", async (req, res) => {
     let orders = data || [];
 
     if (hasDriverLocation) {
-      orders = orders.map(order => {
-        const pickupLat = Number(order.pickup_lat);
-        const pickupLng = Number(order.pickup_lng);
+      orders = await Promise.all(
+        orders.map(async order => {
+          const pickupLat = Number(order.pickup_lat);
+          const pickupLng = Number(order.pickup_lng);
 
-        if (
-          !Number.isFinite(pickupLat) ||
-          !Number.isFinite(pickupLng)
-        ) {
+          if (!Number.isFinite(pickupLat) || !Number.isFinite(pickupLng)) {
+            return {
+              ...order,
+              distance_km: null,
+              traffic_minutes: null,
+              estimated_minutes: null
+            };
+          }
+
+          const distanceKm = getDistanceKm(
+            driverLat,
+            driverLng,
+            pickupLat,
+            pickupLng
+          );
+
+          const trafficMinutes = await getTrafficMinutes(
+            driverLat,
+            driverLng,
+            pickupLat,
+            pickupLng
+          );
+
+          const safeMinutes = getSafeReportMinutes(
+            trafficMinutes || estimateMinutes(distanceKm),
+            accuracy
+          );
+
           return {
             ...order,
-            distance_km: null,
-            estimated_minutes: null
+            distance_km: Number(distanceKm.toFixed(2)),
+            traffic_minutes: trafficMinutes,
+            estimated_minutes: safeMinutes
           };
-        }
-
-        const distanceKm = getDistanceKm(
-          driverLat,
-          driverLng,
-          pickupLat,
-          pickupLng
-        );
-
-        return {
-          ...order,
-          distance_km: Number(distanceKm.toFixed(2)),
-          estimated_minutes: estimateMinutes(distanceKm)
-        };
-      });
+        })
+      );
 
       orders.sort((a, b) => {
         if (a.distance_km == null) return 1;
