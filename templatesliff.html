@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>整單助理</title>
+    <!-- 引入 LINE LIFF SDK -->
+    <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 20px; background: #121212; color: #fff; }
+        .card { background: #1e1e1e; padding: 20px; border-radius: 12px; margin-top: 20px; }
+        .loading { color: #1DB446; font-size: 18px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h2>NPC 整單助理</h2>
+    <div class="card">
+        <p class="loading" id="status">正在取得目前未派單訂單...</p>
+        <div id="order-list"></div>
+    </div>
+
+    <script>
+        async function main() {
+            // 初始化 LIFF
+            await liff.init({ liffId: "2011777708-58qvPNLe" });
+
+            if (!liff.isLoggedIn()) {
+                liff.login();
+                return;
+            }
+
+            // 向後端請求 Google Sheet 未派出的單據
+            let res = await fetch('/api/get_unassigned');
+            let data = await res.json();
+
+            if (data.orders.length === 0) {
+                document.getElementById('status').innerText = "目前沒有未派出的單據！";
+                setTimeout(() => liff.closeWindow(), 2000);
+                return;
+            }
+
+            // 格式化發單訊息 (加入分隔線與符號)
+            let msgText = "╭───【 未派單據清單 】───╮\n";
+            data.orders.forEach(order => {
+                msgText += `✦ ${order}\n`;
+            });
+            msgText += `╰──────────────╯\n總計：${data.orders.length} 筆未派出`;
+
+            document.getElementById('status').innerText = `已送出 ${data.orders.length} 張單...`;
+
+            // 自動將訊息傳送至群組並關閉 LIFF 視窗
+            try {
+                await liff.sendMessages([{
+                    type: 'text',
+                    text: msgText
+                }]);
+                document.getElementById('status').innerText = "整單完成，正在返回群組...";
+                setTimeout(() => liff.closeWindow(), 1200);
+            } catch (err) {
+                console.error("發送訊息失敗:", err);
+                alert("發送失敗，請確認群組權限");
+            }
+        }
+
+        main();
+    </script>
+</body>
+</html>
