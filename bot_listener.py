@@ -282,19 +282,32 @@ def chinese_to_num(text):
     return t
 
 def extract_order_code(text):
+    """
+    精準提取單號代碼：
+    例如 '#Y/ 21.46台中高鐵' -> 提取 'Y/'
+    例如 '#A/ 22.20台中高鐵' -> 提取 'A/'
+    例如 '#1234' -> 提取 '1234'
+    """
     match = re.search(r'#([a-zA-Z0-9/]+)', text)
     if match:
-        return match.group(1).upper()
+        code = match.group(1).upper()
+        # 若包含斜線，只取到斜線 (例如 Y/ 或 A/)
+        if '/' in code:
+            code = code.split('/')[0] + '/'
+        return code
     return None
 
 def extract_core_address(text):
+    """
+    清洗地址，移除單號、時間數字、特殊符號與表情符號
+    """
     t = text
-    t = re.sub(r'\[.*?\]', '', t)                          
-    t = re.sub(r'#[a-zA-Z0-9/／]+', '', t)                 
-    t = re.sub(r'\d{1,2}[:：點\.]\d{2}?', '', t)             
-    t = re.sub(r'(轉帳|改兩台|客下街口|\+\d+)', '', t)       
-    t = chinese_to_num(t)                                    
-    t = re.sub(r'[^\w\u4e00-\u9fa5]', '', t)                 
+    t = re.sub(r'\[.*?\]', '', t)                          # 移除中括號
+    t = re.sub(r'#[a-zA-Z0-9/／]+', '', t)                 # 移除 #開頭單號
+    t = re.sub(r'\d{1,2}[\.:：點]\d{2}?', '', t)             # 移除時間數字如 21.46 或 22.20
+    t = re.sub(r'(轉帳|改兩台|客下街口|\+\d+)', '', t)       # 移除常見備註
+    t = chinese_to_num(t)                                    # 中文數字轉阿拉伯數字
+    t = re.sub(r'[^\w\u4e00-\u9fa5]', '', t)                 # 移除標點符號與 Emoji (如 🐈)
     return t.strip()
 
 def is_new_order_format(text):
