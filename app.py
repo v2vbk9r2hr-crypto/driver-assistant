@@ -115,27 +115,16 @@ if handler:
         upper_code = order_code.upper()
 
         # ---------------------------------------------------------
-        # 【過濾與驗證規則寫死】
+        # 【寫死：擴充所有司機回報特徵與狀態字】
         # ---------------------------------------------------------
         has_car_num = bool(re.search(r'\d{4}', msg_text))
         is_forwarded = msg_text.startswith('[')
-        has_status_kw = bool(re.search(r'(客上|客到|到|上|下|收|取消|抵達|代駕|紙煙|紙菸)', msg_text))
+        
+        # 包含常見狀態字、Emoji（⬆️, ⬇️, 🆗 等）
+        has_status_kw = bool(re.search(r'(客上|客到|抵達|到|上|下|收|取消|代駕|紙煙|紙菸|網銀|禁網銀|⬆️|⬇️|🆗|👍)', msg_text))
 
-        last_line = lines[-1] if lines else msg_text
-
-        # 判斷最後一行是否為純「到/上/下/客上」
-        is_pure_status_last_line = bool(re.fullmatch(r'^(到|客上|上|下|收|取消|抵達)$', last_line))
-
-        # 判斷最後一行是否有時間/分鐘 (例: 6分, 12分, 10min, 15)
-        has_minute_in_last_line = bool(re.search(r'(\d{1,2}\s*(分鐘|分|min)|\b\d{1,2}\b)', last_line))
-
-        # 司機回報認定條件
-        is_driver_report = (has_car_num or is_forwarded or has_status_kw) and has_minute_in_last_line and not is_pure_status_last_line
-
-        # 遇到純「到/上/下」無時間回報 -> 直接拋棄不處理
-        if (has_car_num or is_forwarded or has_status_kw) and is_pure_status_last_line:
-            print(f"🛑 [過濾拋棄] 純狀態回報 ({last_line}) 且無時間，不寫入試算表: {msg_text}")
-            return
+        # 只要有車號、轉發符號、或是包含狀態關鍵字/多行 -> 100% 認定為司機回報
+        is_driver_report = has_car_num or is_forwarded or has_status_kw or len(lines) > 1
 
         try:
             sheet = get_sheet()
@@ -144,7 +133,7 @@ if handler:
             target_row_idx = None
             first_empty_row = len(records) + 1  # 預設第一個空白列
 
-            # 遍歷試算表：尋找匹配單號 & 計算第一個空白列
+            # 遍歷試算表：尋找匹配單號
             for idx, row in enumerate(records[1:], start=2):
                 if not row or not row[0].strip():
                     if first_empty_row > idx:
@@ -164,23 +153,22 @@ if handler:
                         break
 
             # --------------------------------------------------
-            # 情境 A：司機回報訊息
+            # 情境 A：司機回報訊息（包含帶車號、到、客上、抵達、⬆️ 等）
             # --------------------------------------------------
             if is_driver_report:
                 if target_row_idx:
-                    # 原單存在：取得 A 欄單據內容 (優先用快取，沒有則用試算表原本第一行)
+                    # ✅ 找到原單才更新：A 欄維持原本鎖定的第一單，C 欄寫入回報
                     a_column_content = ORIGINAL_ORDERS_CACHE.get(upper_code, records[target_row_idx-1][0].splitlines()[0])
-                    
                     sheet.update(f"A{target_row_idx}:C{target_row_idx}", [[a_column_content, "已派出", msg_text]])
-                    print(f"🔄 [司機回報更新] 第 {target_row_idx} 列：A欄=[{a_column_content}]，B欄=已派出，C欄=多行回報")
+                    print(f"🔄 [司機回報更新] 第 {target_row_idx} 列：A欄=[{a_column_content}]，B欄=已派出，C欄寫入回報")
                 else:
-                    # 🔴【核心修改】找不到原單（例如中途加入群組的單據）-> 絕對不自動補單，直接跳過！
-                    print(f"🛑 [無對應原單] 找不到單號 #{upper_code} 的原始派單，忽略此回報，不寫入試算表！")
+                    # 🛑 找不到原單（例如半途加入、無對應派單）：100% 強制丟棄，絕不寫入！
+                    print(f"🛑 [強行攔截] 司機回報訊息無對應原單 (單號 #{upper_code})，拒絕建立新列並直接忽略: {msg_text}")
                 
                 return
 
             # --------------------------------------------------
-            # 情境 B：管理員原始發單 (只有這裡才會建立新單)
+            # 情境 B：管理員原始發單 (完全不含車號與狀態字的純派單)
             # --------------------------------------------------
             if target_row_idx:
                 print(f"🔴 [重複原單] 單號 #{upper_code} 已存在於第 {target_row_idx} 列，不重複寫入！")
@@ -190,7 +178,7 @@ if handler:
                 # 記錄到記憶體中
                 ORIGINAL_ORDERS_CACHE[upper_code] = incoming_first_line
                 
-                # 精準寫入第一個空白列：A欄只寫第一行純單據
+                # 精準寫入第一個空白列：A欄只寫純單據第 1 行
                 sheet.update(f"A{first_empty_row}:F{first_empty_row}", [[incoming_first_line, "未派出", "", "", "", order_type]])
                 print(f"⚡ [原始發單寫入] 第 {first_empty_row} 列：A欄=[{incoming_first_line}]，類型={order_type}")
 
