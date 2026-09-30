@@ -52,16 +52,6 @@ def get_sheet():
 # ---------------------------------------------------------
 # 單號、時間與地址解析邏輯
 # ---------------------------------------------------------
-def extract_core_address(text):
-    """清理地址內容"""
-    t = text
-    t = re.sub(r'\[.*?\]', '', t)                          
-    t = re.sub(r'#[a-zA-Z0-9/／]+', '', t)                 
-    t = re.sub(r'\d{1,2}[\.:：點]\d{2}?', '', t)             
-    t = re.sub(r'(轉帳|改兩台|客下街口|\+\d+)', '', t)       
-    t = re.sub(r'[^\w\u4e00-\u9fa5]', '', t)                 
-    return t.strip()
-
 def parse_order_info(text):
     """從訊息中解析出：單號、預約時間、核心地址"""
     if not text:
@@ -173,41 +163,36 @@ if handler:
                         target_row_idx = idx
                         break
 
-            # ---------------------------------------------------------
-            # 【A 欄單號內容鎖定機制】
-            # 優先使用記憶體中「重置後看過的第一單」內容，若無則存入快取
-            # ---------------------------------------------------------
-            if upper_code in ORIGINAL_ORDERS_CACHE:
-                a_column_content = ORIGINAL_ORDERS_CACHE[upper_code]
-            else:
-                a_column_content = incoming_first_line
-                ORIGINAL_ORDERS_CACHE[upper_code] = incoming_first_line
-                print(f"📌 [記憶體紀錄] 單號 #{upper_code} 鎖定第一單A欄內容: {a_column_content}")
-
             # --------------------------------------------------
-            # 情境 A：司機回報 (最後一行含時間)
+            # 情境 A：司機回報訊息
             # --------------------------------------------------
             if is_driver_report:
                 if target_row_idx:
-                    # 原單存在：A 欄寫入鎖定的第一單內容，B 欄改已派出，C 欄寫入完整多行司機回報
+                    # 原單存在：取得 A 欄單據內容 (優先用快取，沒有則用試算表原本第一行)
+                    a_column_content = ORIGINAL_ORDERS_CACHE.get(upper_code, records[target_row_idx-1][0].splitlines()[0])
+                    
                     sheet.update(f"A{target_row_idx}:C{target_row_idx}", [[a_column_content, "已派出", msg_text]])
                     print(f"🔄 [司機回報更新] 第 {target_row_idx} 列：A欄=[{a_column_content}]，B欄=已派出，C欄=多行回報")
                 else:
-                    # 原單不存在（補單）：寫入空行
-                    sheet.update(f"A{first_empty_row}:C{first_empty_row}", [[a_column_content, "已派出", msg_text]])
-                    print(f"🛠️ [司機回報補單] 第 {first_empty_row} 列：A欄=[{a_column_content}]，B欄=已派出，C欄=多行回報")
+                    # 🔴【核心修改】找不到原單（例如中途加入群組的單據）-> 絕對不自動補單，直接跳過！
+                    print(f"🛑 [無對應原單] 找不到單號 #{upper_code} 的原始派單，忽略此回報，不寫入試算表！")
+                
                 return
 
             # --------------------------------------------------
-            # 情境 B：管理員原始發單
+            # 情境 B：管理員原始發單 (只有這裡才會建立新單)
             # --------------------------------------------------
             if target_row_idx:
                 print(f"🔴 [重複原單] 單號 #{upper_code} 已存在於第 {target_row_idx} 列，不重複寫入！")
             else:
                 order_type = "預約" if booking_time else "即時"
-                # A 欄只寫入第一單的第一行內容
-                sheet.update(f"A{first_empty_row}:F{first_empty_row}", [[a_column_content, "未派出", "", "", "", order_type]])
-                print(f"⚡ [原始發單寫入] 第 {first_empty_row} 列：A欄=[{a_column_content}]，類型={order_type}")
+                
+                # 記錄到記憶體中
+                ORIGINAL_ORDERS_CACHE[upper_code] = incoming_first_line
+                
+                # 精準寫入第一個空白列：A欄只寫第一行純單據
+                sheet.update(f"A{first_empty_row}:F{first_empty_row}", [[incoming_first_line, "未派出", "", "", "", order_type]])
+                print(f"⚡ [原始發單寫入] 第 {first_empty_row} 列：A欄=[{incoming_first_line}]，類型={order_type}")
 
         except Exception as e:
             print(f"❌ 處理單據時發生錯誤: {e}")
