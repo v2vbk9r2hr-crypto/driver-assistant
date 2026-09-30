@@ -172,7 +172,8 @@ init_sheet_data()
 def parse_booking_time(text):
     """ 從單號中解析時間 """
     now = datetime.now()
-    match = re.search(r'(\d{1,2})[:：點](\d{2})?', text)
+    # 🟢 已加入 \. 支援小數點格式（如 07.00、06:40）
+    match = re.search(r'(\d{1,2})[:：點\.](\d{2})?', text)
     if match:
         hour = int(match.group(1))
         minute = int(match.group(2)) if match.group(2) else 0
