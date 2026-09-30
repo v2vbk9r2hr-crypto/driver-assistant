@@ -40,35 +40,53 @@ scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapi
 google_creds_raw = os.environ.get("GOOGLE_CREDENTIALS")
 
 creds = None
+gs_client = None
+
 if google_creds_raw and google_creds_raw.strip():
     raw_str = google_creds_raw.strip()
+    creds_info = None
+
+    # 1. 先嘗試直接當作 JSON 字串解析
     try:
-        # 1. 優先嘗試 Base64 解碼
+        creds_info = json.loads(raw_str)
+        print("✅ 成功將 GOOGLE_CREDENTIALS 直接解析為 JSON")
+    except Exception:
+        pass
+
+    # 2. 若不是 JSON，嘗試做 Base64 解碼後再解析
+    if not creds_info:
         try:
+            # 自動補足 base64 padding
+            missing_padding = len(raw_str) % 4
+            if missing_padding:
+                raw_str += '=' * (4 - missing_padding)
+            
             decoded_bytes = base64.b64decode(raw_str)
             json_str = decoded_bytes.decode("utf-8")
             creds_info = json.loads(json_str)
-            print("✅ 成功解析 Base64 格式之 GOOGLE_CREDENTIALS")
-        except Exception:
-            # 2. 若非 Base64，直接解析 JSON 字串
-            creds_info = json.loads(raw_str)
-            print("✅ 成功解析 JSON 格式之 GOOGLE_CREDENTIALS")
+            print("✅ 成功將 GOOGLE_CREDENTIALS 解碼 Base64 並解析為 JSON")
+        except Exception as e:
+            print(f"❌ Base64 與 JSON 解析皆失敗: {e}")
 
-        # 修正私鑰換行符號問題
-        if "private_key" in creds_info:
-            creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+    # 3. 如果成功取得 dict，建構 Credentials 物件
+    if creds_info:
+        try:
+            if "private_key" in creds_info:
+                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+        except Exception as e:
+            print(f"❌ 從憑證資訊建構 Credentials 失敗: {e}")
 
-        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
-    except Exception as e:
-        print(f"❌ 解析 GOOGLE_CREDENTIALS 環境變數失敗: {e}")
-
-# 若環境變數讀取失敗，才嘗試讀取本地 credentials.json（備用）
+# 若環境變數處理失敗，備用讀取本地檔案
 if not creds:
     if os.path.exists("credentials.json"):
-        creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
-        print("✅ 成功讀取本地 credentials.json 檔案")
+        try:
+            creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
+            print("✅ 成功讀取本地 credentials.json 檔案")
+        except Exception as e:
+            print(f"❌ 讀取本地 credentials.json 失敗: {e}")
     else:
-        print("❌ 未設定 GOOGLE_CREDENTIALS 環境變數，且本地無 credentials.json 檔案！")
+        print("❌ 未設定有效 GOOGLE_CREDENTIALS，且無本地 credentials.json！")
 
 if creds:
     gs_client = gspread.authorize(creds)
