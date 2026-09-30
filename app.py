@@ -119,22 +119,39 @@ if handler:
         lines = [line.strip() for line in msg_text.splitlines() if line.strip()]
 
         # ---------------------------------------------------------
-        # 【精準驗證司機回報】
-        # 條件 1：含有 4 位車號 或 轉發暱稱 [某某] 或 客上/客到/代駕 等狀態
-        # 條件 2：【硬性要求】最後一行 (或訊息內) 必須含有「分鐘/分/min」或抵達狀態的回報格式
+        # 【鐵律 1：A 欄強制只取第一行】
+        # 不論訊息有多少行，A 欄的內容只允許是第一行 (單號 + 地址)
+        # ---------------------------------------------------------
+        single_line_order = lines[0] if lines else msg_text
+
+        # ---------------------------------------------------------
+        # 【鐵律 2：C 欄司機回報嚴格過濾】
+        # 1. 判斷是否有司機特徵 (4位車號, [轉發], 狀態字)
+        # 2. 硬性規定：最後一行必須包含「分鐘/時間」格式！
+        # 3. 排除純「到/客上/上/下」的回報！
         # ---------------------------------------------------------
         has_car_num = bool(re.search(r'\d{4}', msg_text))
         is_forwarded = msg_text.startswith('[')
         has_status_kw = bool(re.search(r'(客上|客到|到|上|下|收|取消|抵達|代駕|紙煙|紙菸)', msg_text))
 
-        # 檢查最後一行或訊息內容是否包含「分鐘」格式 (例如: 6分, 12分, 10min)
+        # 抓取最後一行
         last_line = lines[-1] if lines else msg_text
-        has_minute_format = bool(re.search(r'(\d{1,2}\s*(分鐘|分|min)|\b\d{1,2}\b|到|客上)', last_line)) or \
-                            bool(re.search(r'(\d{1,2}\s*(分鐘|分|min))', msg_text))
 
-        is_driver_report = (has_car_num or is_forwarded or has_status_kw) and has_minute_format
+        # 判斷最後一行是否為純「到/上/下/客上」這種不需要紀錄的回報
+        is_pure_status_last_line = bool(re.fullmatch(r'^(到|客上|上|下|收|取消|抵達)$', last_line))
 
-        order_code, booking_time, core_address = parse_order_info(msg_text)
+        # 精準檢查最後一行或訊息結尾是否有分鐘/時間 (例: 6分, 12分, 10min, 15)
+        has_minute_in_last_line = bool(re.search(r'(\d{1,2}\s*(分鐘|分|min)|\b\d{1,2}\b)', last_line))
+
+        # 司機回報條件：必須有司機特徵 + 最後一行有時間 + 不是純「到/上」狀態
+        is_driver_report = (has_car_num or is_forwarded or has_status_kw) and has_minute_in_last_line and not is_pure_status_last_line
+
+        # 如果含有車號/狀態，但最後一行只是「到/上」且無時間 -> 直接拋棄不寫入！
+        if (has_car_num or is_forwarded or has_status_kw) and is_pure_status_last_line:
+            print(f"🛑 [過濾拋棄] 訊息為純狀態回報 ({last_line}) 且無時間，不寫入試算表: {msg_text}")
+            return
+
+        order_code, booking_time, core_address = parse_order_info(single_line_order)
 
         if not order_code:
             print(f"⚠️ 無法解析單號，跳過訊息: {msg_text}")
@@ -167,26 +184,23 @@ if handler:
                         target_row_idx = idx
                         break
 
-            # A 欄統一只取第一行（單號 + 地址）
-            single_line_order = lines[0] if lines else msg_text
-
             # --------------------------------------------------
-            # 情境 A：符合包含「分鐘格式」的司機回報訊息
+            # 情境 A：符合最後一行有時間的司機回報訊息
             # --------------------------------------------------
             if is_driver_report:
                 if target_row_idx:
-                    # 原單已存在：A 欄更新為單行純單據，B 欄改已派出，C 欄寫入完整多行司機回報
+                    # 原單已存在：A 欄鎖死單行純單據，B 欄改已派出，C 欄寫入完整多行司機回報
                     sheet.update(f"A{target_row_idx}:C{target_row_idx}", [[single_line_order, "已派出", msg_text]])
-                    print(f"🔄 [司機回報成功] 第 {target_row_idx} 列：A欄保留單行，B欄=已派出，C欄填入多行回報！")
+                    print(f"🔄 [司機回報成功] 第 {target_row_idx} 列：A欄填單行 [{single_line_order}]，B欄=已派出，C欄填寫多行回報！")
                 else:
-                    # 原單不存在（補單）：於第一個空行填入資料
+                    # 原單不存在（自動補單）：於第一個空行填入，A欄依然只填單行
                     sheet.update(f"A{first_empty_row}:C{first_empty_row}", [[single_line_order, "已派出", msg_text]])
-                    print(f"🛠️ [自動補單成功] 第 {first_empty_row} 列：A欄補單號地址，C欄寫入多行回報！")
+                    print(f"🛠️ [自動補單成功] 第 {first_empty_row} 列：A欄補單行 [{single_line_order}]，C欄寫入多行回報！")
                 
                 return
 
             # --------------------------------------------------
-            # 情境 B：管理員發出的「原始派單」 (A 欄僅寫入 1 行)
+            # 情境 B：管理員發出的「原始派單」 (A 欄鎖死僅寫入第 1 行)
             # --------------------------------------------------
             if target_row_idx:
                 print(f"🔴 [重複原單] 單號 #{order_code} 已存在於第 {target_row_idx} 列，不重複寫入！")
