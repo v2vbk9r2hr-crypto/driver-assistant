@@ -14,7 +14,8 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
     MessageEvent, TextMessage, FlexSendMessage,
-    BubbleContainer, BoxComponent, ButtonComponent, TextComponent, URIAction
+    BubbleContainer, BoxComponent, ButtonComponent, TextComponent, URIAction,
+    UnsendEvent  # 🟢 1. 新增 UnsendEvent 引用
 )
 import gspread
 from google.oauth2.service_account import Credentials
@@ -66,7 +67,7 @@ if google_creds_raw and google_creds_raw.strip():
         except Exception as e:
             print(f"❌ 解析失敗: {e}")
 
-    # 3. 建構 Credentials 物件 (原始 JSON 解出來的 private_key 已經包含正確換行)
+    # 3. 建構 Credentials 物件
     if creds_info:
         try:
             creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
@@ -91,25 +92,6 @@ if creds:
     except Exception as e:
         print(f"❌ 初始化 Google Sheet 失敗: {e}")
 
-# 若環境變數讀取失敗，備用讀取本地檔案
-if not creds:
-    if os.path.exists("credentials.json"):
-        try:
-            creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
-            print("✅ 成功讀取本地 credentials.json 檔案")
-        except Exception as e:
-            print(f"❌ 讀取本地 credentials.json 失敗: {e}")
-    else:
-        print("❌ 未設定有效 GOOGLE_CREDENTIALS，且無本地 credentials.json！")
-
-# 進行 gspread 授權認證
-if creds:
-    try:
-        gs_client = gspread.authorize(creds)
-        print("🎉 Google Sheet 授權認證成功！")
-    except Exception as e:
-        print(f"❌ 初始化 Google Sheet 失敗: {e}")
-
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
@@ -119,6 +101,9 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 sheet_data = []             # 全域記憶體快取
 write_queue = queue.Queue() # Google Sheet 背景寫入隊列
 sheet_lock = threading.Lock()
+
+# 🟢 2. 新增快取：用來紀錄 message_id 與 Google Sheet 列號的對照關聯
+msg_id_to_row = {}
 
 def get_real_sheet():
     return gs_client.open(SHEET_NAME).sheet1
@@ -329,6 +314,7 @@ def api_get_unassigned():
     unassigned_orders = []
     with sheet_lock:
         for row in sheet_data[1:]:
+            # 🟢 只抓取狀態為 "未派出" 的單據，已過濾掉 "取消" 與 "已派出"
             if len(row) >= 2 and row[1] == "未派出":
                 unassigned_orders.append(row[0].strip())
     return jsonify({"orders": unassigned_orders})
@@ -351,11 +337,29 @@ def callback():
         abort(400)
     return 'OK'
 
+# 🟢 3. 收回訊息事件監聽邏輯 (UnsendEvent)
+@handler.add(UnsendEvent)
+def handle_unsend(event):
+    unsend_msg_id = event.unsend.message_id
+    print(f"🗑️ 收到訊息收回事件 (message_id: {unsend_msg_id})")
+
+    with sheet_lock:
+        target_row_idx = msg_id_to_row.get(unsend_msg_id)
+        
+        if target_row_idx and target_row_idx <= len(sheet_data):
+            # 找到歷史對應列數，更改狀態為「取消」
+            sheet_data[target_row_idx - 1][1] = "取消"
+            write_queue.put(("update_cell", (target_row_idx, 2, "取消")))
+            print(f"🚫 [收回取消成功] 第 {target_row_idx} 列單據狀態已更新為：取消")
+        else:
+            print(f"⚠️ [收回提示] 快取中未發現 message_id={unsend_msg_id} 的對應派單，可能為一般非派單對話。")
+
 # 🟢 主訊息監聽邏輯
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_msg = event.message.text.strip()
     user_id = event.source.user_id
+    msg_id = event.message.id  # 🟢 取得當前訊息的 message_id
 
     # 1. 🧮 車資試算指令處理
     if user_msg.startswith("試算") or user_msg.startswith("車資"):
@@ -371,15 +375,15 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextMessage(text=hint))
             return
 
-# 2. 一鍵整單指令
+    # 2. 一鍵整單指令
     if user_msg in ["整單", "一鍵整單"]:
         flex_msg = FlexSendMessage(
             alt_text="一鍵整單助理",
             contents=BubbleContainer(
-                size='nano',  # 🟢 縮小卡片整體尺寸（可選 'nano' 或 'micro'）
+                size='nano',
                 body=BoxComponent(
                     layout='vertical',
-                    padding_all='10px',  # 🟢 縮減卡片內邊距
+                    padding_all='10px',
                     spacing='sm',
                     contents=[
                         TextComponent(
@@ -392,7 +396,7 @@ def handle_message(event):
                         ButtonComponent(
                             style='primary',
                             color='#1DB446',
-                            height='sm',  # 🟢 縮小按鈕高度
+                            height='sm',
                             action=URIAction(label='一鍵整單', uri=f'https://liff.line.me/{LIFF_ID}')
                         )
                     ]
@@ -462,12 +466,12 @@ def handle_message(event):
             existing_code = extract_order_code(existing_raw)
             existing_core = extract_core_address(existing_raw)
 
-            # 1. 完整字串一致（例如完全相同的單號）
+            # 1. 完整字串一致
             if user_msg == existing_raw or first_line == existing_raw:
                 same_order_same_addr_idx = idx
                 break
 
-            # 2. 比對單號代碼（例如 1/1）
+            # 2. 比對單號代碼
             if incoming_code and existing_code and incoming_code == existing_code:
                 if not incoming_core and not existing_core:
                     same_order_same_addr_idx = idx
@@ -484,11 +488,9 @@ def handle_message(event):
         if same_order_same_addr_idx is not None:
             existing_c_cell = sheet_data[same_order_same_addr_idx - 1][2].strip()
 
-            # 檢查是否為有效的司機回報格式 (3行或4行)
             if is_valid_driver_report(user_msg):
                 formatted_report = f"[{sender_name}]\n{user_msg}"
                 
-                # 若已有其他司機回報 -> 自動換行追加記錄
                 if existing_c_cell:
                     new_c_content = f"{existing_c_cell}\n\n--------------------\n{formatted_report}"
                     print(f"⚠️ [多司機搶單記錄] 第 {same_order_same_addr_idx} 列追加司機資訊 ({sender_name})")
@@ -521,12 +523,17 @@ def handle_message(event):
                     new_type
                 ]
                 sheet_data.append(new_row)
+                target_row = len(sheet_data)
+                
+                # 🟢 4. 建立當前訊息 ID 與 Google Sheet 列號的對照（供後續收回時查詢）
+                msg_id_to_row[msg_id] = target_row
+                
                 write_queue.put(("append", new_row))
                 
                 if same_order_diff_addr_found:
-                    print(f"⚡ [同單號不同地址] 作為新單新增至第 {len(sheet_data)} 列: {user_msg}")
+                    print(f"⚡ [同單號不同地址] 作為新單新增至第 {target_row} 列: {user_msg}")
                 else:
-                    print(f"⚡ [全新單號寫入] 作為新單新增至第 {len(sheet_data)} 列: {user_msg}")
+                    print(f"⚡ [全新單號寫入] 作為新單新增至第 {target_row} 列: {user_msg}")
                 return
 
 if __name__ == "__main__":
