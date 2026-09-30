@@ -54,15 +54,18 @@ def extract_core_address(text):
 
 def parse_order_info(text):
     """
-    從訊息第一行解析出：單號、預約時間、核心地址
+    從訊息中解析出：單號、預約時間、核心地址
     """
-    first_line = text.splitlines()[0].strip() if text else ""
+    if not text:
+        return None, None, ""
+        
+    first_line = text.splitlines()[0].strip()
     
-    # 1. 抓取 # 後面到 / 之間的單號 (支援英數、中文，如 店77, ST, 94, Y)
+    # 1. 抓取 # 後面到 / 之間的單號 (支援英數與中文，例: #W8/, #SD/, #C/, #WD4/, #57/)
     code_match = re.search(r'#([a-zA-Z0-9\u4e00-\u9fa5]+)', first_line)
     order_code = code_match.group(1) if code_match else None
 
-    # 2. 抓取預約時間 (支援 12:30、06.20、6.20、1230)
+    # 2. 抓取預約時間 (支援 12:30, 06.20, 6.20, 1230)
     time_match = re.search(r'(\d{1,2}[:.]\d{2}|\d{4})', first_line)
     booking_time = time_match.group(1).replace('.', ':') if time_match else None
 
@@ -91,25 +94,28 @@ if handler:
     def handle_message(event):
         msg_text = event.message.text.strip()
 
-        # 必須包含 # 才處理
+        # 訊息必須包含 # 才處理
         if '#' not in msg_text:
             return
 
-        lines = [line.strip() for line in msg_text.splitlines() if line.strip()]
-
         # ---------------------------------------------------------
-        # 【第一優先】絕對鐵壁判斷：是否為司機回報/搶單訊息？
-        # 只要符合下列任一條件，100% 認定為司機回報，絕對不允許新增至 A 欄！
-        # 1. 訊息超過 1 行
-        # 2. 包含 4 位數車號 (如 7778, 8051, 0273)
-        # 3. 包含狀態關鍵字 (到, 客上, 上, 下, 收, 取消, 抵達, 代駕, 紙煙, 紙菸)
+        # 【精準鑑定】是否為司機回報/搶單訊息：
+        # 司機回報特徵：
+        # 1. 含有 4 位數字車號 (如 3088, 3756, 7599, 3061, 6790)
+        # 2. 開頭帶有 LINE 轉傳暱稱 [某某] (如 [伯燕], [李逍遙], [巴斯])
+        # 3. 含有司機動作/狀態關鍵字 (到, 客上, 上, 下, 收, 取消, 抵達, 代駕)
         # ---------------------------------------------------------
         has_car_num = bool(re.search(r'\d{4}', msg_text))
+        is_forwarded = msg_text.startswith('[')
         has_status_kw = bool(re.search(r'(客上|客到|到|上|下|收|取消|抵達|代駕|紙煙|紙菸|\d{1,2}\s*(分鐘|分|min))', msg_text))
-        
-        is_driver_report = (len(lines) > 1) or has_car_num or has_status_kw
+
+        is_driver_report = has_car_num or is_forwarded or has_status_kw
 
         order_code, booking_time, core_address = parse_order_info(msg_text)
+
+        if not order_code:
+            print(f"⚠️ 無法解析單號，跳過訊息: {msg_text}")
+            return
 
         try:
             sheet = get_sheet()
@@ -117,55 +123,53 @@ if handler:
 
             target_row_idx = None
 
-            # 搜尋試算表中是否有對應的原單
-            if order_code:
-                for idx, row in enumerate(records[1:], start=2): # 從第 2 行開始 (比對 A 欄)
-                    if not row or not row[0]:
-                        continue
-                    ex_text = row[0]
-                    ex_code, ex_time, ex_address = parse_order_info(ex_text)
+            # 搜尋試算表中 A 欄是否已有該單號的原單
+            for idx, row in enumerate(records[1:], start=2): # 從第 2 行開始
+                if not row or not row[0]: # 忽略 A 欄空白的無效列
+                    continue
+                ex_text = row[0]
+                ex_code, ex_time, ex_address = parse_order_info(ex_text)
 
-                    # 單號相同即比對 (不分大小寫)
-                    if ex_code and order_code.upper() == ex_code.upper():
-                        if core_address and ex_address:
-                            if (core_address in ex_address) or (ex_address in core_address):
-                                target_row_idx = idx
-                                break
-                        else:
+                # 比對單號 (不分大小寫)
+                if ex_code and order_code.upper() == ex_code.upper():
+                    if core_address and ex_address:
+                        if (core_address in ex_address) or (ex_address in core_address):
                             target_row_idx = idx
                             break
+                    else:
+                        target_row_idx = idx
+                        break
 
             # --------------------------------------------------
-            # 情境 A：這是司機的回報訊息 (搶單/進度)
+            # 情境 A：這是司機的回報 / 搶單 / 進度訊息
             # --------------------------------------------------
             if is_driver_report:
                 if target_row_idx:
-                    # 找到原單：更新 B 欄為已派出，C 欄寫入司機回報
+                    # 1. 正常找到原單：更新 B 欄為已派出，C 欄寫入司機回報資訊
                     sheet.update_cell(target_row_idx, 2, "已派出")  # B欄
                     sheet.update_cell(target_row_idx, 3, msg_text)   # C欄
                     print(f"🔄 [司機回報成功] 第 {target_row_idx} 列更新為【已派出】，C欄已寫入。")
                 else:
-                    print(f"🛑 [強行攔截] 訊息判定為司機回報，但在 A 欄找不到原始單據 (#{order_code})，直接拋棄！")
+                    # 2. 防護補單機制：如果 A 欄找不到原單，自動將第一行作為原單補寫到 A 欄！
+                    first_line = msg_text.splitlines()[0]
+                    # 提取第一行作為原單，寫入 A 欄，B 欄設已派出，C 欄設完整司機回報
+                    sheet.append_row([first_line, "已派出", msg_text])
+                    print(f"🛠️ [自動補單並更新] A欄無對應原單，已自動補建 A欄: {first_line}，B欄: 已派出，C欄: 回報內容")
                 
-                # 司機訊息處理結束，強制離開，絕不執行 append_row！
-                return
+                return # 處理完畢，直接結束
 
             # --------------------------------------------------
-            # 情境 B：這是管理員發出的「純原始派單」（只有 1 行）
+            # 情境 B：這是管理員發出的「原始派單」
             # --------------------------------------------------
-            if not order_code:
-                print(f"⚠️ 無法解析單號，跳過: {msg_text}")
-                return
-
             if target_row_idx:
                 print(f"🔴 [重複原單] 單號 #{order_code} 已存在於第 {target_row_idx} 列，不重複寫入！")
             else:
-                # 判斷是預約單還是即時單 (如果有抓到預約時間則標記預約)
+                # 判斷是預約單還是即時單
                 order_type = "預約" if booking_time else "即時"
                 
-                # 寫入全新單據至 A 欄，B 欄為未派出
+                # 正確將原始單據寫入 A 欄，B 欄為「未派出」
                 sheet.append_row([msg_text, "未派出", "", "", "", order_type])
-                print(f"⚡ [全新原單寫入] 類型: {order_type}, 內容: {msg_text}")
+                print(f"⚡ [全新原單成功寫入] A欄: {msg_text}, 類型: {order_type}")
 
         except Exception as e:
             print(f"❌ 處理單據時發生錯誤: {e}")
