@@ -42,44 +42,54 @@ google_creds_raw = os.environ.get("GOOGLE_CREDENTIALS")
 creds = None
 gs_client = None
 
-# ----------------------------------------------------
-# 🔐 修正後的 GOOGLE_CREDENTIALS 解析邏輯
-# ----------------------------------------------------
 if google_creds_raw and google_creds_raw.strip():
     raw_str = google_creds_raw.strip()
     creds_info = None
 
-    # 1. 優先嘗試當作 JSON 字串直接解析
+    # 1. 嘗試 Base64 解碼
     try:
-        creds_info = json.loads(raw_str)
-        print("✅ 成功將 GOOGLE_CREDENTIALS 直接解析為 JSON")
+        missing_padding = len(raw_str) % 4
+        if missing_padding:
+            raw_str += '=' * (4 - missing_padding)
+        decoded_bytes = base64.b64decode(raw_str)
+        json_str = decoded_bytes.decode("utf-8")
+        creds_info = json.loads(json_str)
+        print("✅ 成功將 GOOGLE_CREDENTIALS 解碼 Base64 並解析為 JSON")
     except Exception:
         pass
 
-    # 2. 若直接解析失敗，嘗試 Base64 解碼後解析
+    # 2. 若非 Base64，嘗試直接當作 JSON 解析
     if not creds_info:
         try:
-            missing_padding = len(raw_str) % 4
-            if missing_padding:
-                raw_str += '=' * (4 - missing_padding)
-            decoded_bytes = base64.b64decode(raw_str)
-            json_str = decoded_bytes.decode("utf-8")
-            creds_info = json.loads(json_str)
-            print("✅ 成功將 GOOGLE_CREDENTIALS 解碼 Base64 並解析為 JSON")
+            creds_info = json.loads(raw_str)
+            print("✅ 成功將 GOOGLE_CREDENTIALS 直接解析為 JSON")
         except Exception as e:
             print(f"❌ 解析失敗: {e}")
 
-    # 3. 建構 Credentials 物件（修復 private_key 換行符號問題）
+    # 3. 建構 Credentials 物件 (原始 JSON 解出來的 private_key 已經包含正確換行)
     if creds_info:
         try:
-            if "private_key" in creds_info and isinstance(creds_info["private_key"], str):
-                pk = creds_info["private_key"]
-                pk = pk.replace("\\\\n", "\n").replace("\\n", "\n")
-                creds_info["private_key"] = pk
-
             creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
         except Exception as e:
             print(f"❌ 從憑證資訊建構 Credentials 失敗: {e}")
+
+# 若環境變數處理失敗，備用讀取本地檔案
+if not creds:
+    if os.path.exists("credentials.json"):
+        try:
+            creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
+            print("✅ 成功讀取本地 credentials.json 檔案")
+        except Exception as e:
+            print(f"❌ 讀取本地 credentials.json 失敗: {e}")
+    else:
+        print("❌ 未設定有效 GOOGLE_CREDENTIALS，且無本地 credentials.json！")
+
+if creds:
+    try:
+        gs_client = gspread.authorize(creds)
+        print("🎉 Google Sheet 授權認證成功！")
+    except Exception as e:
+        print(f"❌ 初始化 Google Sheet 失敗: {e}")
 
 # 若環境變數讀取失敗，備用讀取本地檔案
 if not creds:
