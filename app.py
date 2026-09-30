@@ -7,9 +7,20 @@ import gspread
 from google.oauth2.service_account import Credentials
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import MessageEvent, TextMessage
 
 app = Flask(__name__)
+
+# ---------------------------------------------------------
+# 全域記憶體/快取設定與清空功能
+# ---------------------------------------------------------
+MEMORY_CACHE = {}
+
+def clear_memory_cache():
+    """清空系統暫存記憶體"""
+    global MEMORY_CACHE
+    MEMORY_CACHE.clear()
+    print("🧹 [記憶體清空] 系統暫存記憶體已成功重置與清空！")
 
 # ---------------------------------------------------------
 # 環境變數與 Google Sheet 設定
@@ -94,18 +105,34 @@ if handler:
     def handle_message(event):
         msg_text = event.message.text.strip()
 
-        # 訊息必須包含 # 才處理
+        # ---------------------------------------------------------
+        # 功能：輸入 !clear 或 !清空記憶體 可手動清空暫存記憶體
+        # ---------------------------------------------------------
+        if msg_text in ['!clear', '!清空記憶體', '清空記憶體']:
+            clear_memory_cache()
+            return
+
+        # 訊息必須包含 # 才進行處理
         if '#' not in msg_text:
             return
 
+        lines = [line.strip() for line in msg_text.splitlines() if line.strip()]
+
         # ---------------------------------------------------------
-        # 【精準鑑定】是否為司機回報/搶單訊息
+        # 【精準驗證司機回報】
+        # 條件 1：含有 4 位車號 或 轉發暱稱 [某某] 或 客上/客到/代駕 等狀態
+        # 條件 2：【硬性要求】最後一行 (或訊息內) 必須含有「分鐘/分/min」或抵達狀態的回報格式
         # ---------------------------------------------------------
         has_car_num = bool(re.search(r'\d{4}', msg_text))
         is_forwarded = msg_text.startswith('[')
-        has_status_kw = bool(re.search(r'(客上|客到|到|上|下|收|取消|抵達|代駕|紙煙|紙菸|\d{1,2}\s*(分鐘|分|min))', msg_text))
+        has_status_kw = bool(re.search(r'(客上|客到|到|上|下|收|取消|抵達|代駕|紙煙|紙菸)', msg_text))
 
-        is_driver_report = has_car_num or is_forwarded or has_status_kw
+        # 檢查最後一行或訊息內容是否包含「分鐘」格式 (例如: 6分, 12分, 10min)
+        last_line = lines[-1] if lines else msg_text
+        has_minute_format = bool(re.search(r'(\d{1,2}\s*(分鐘|分|min)|\b\d{1,2}\b|到|客上)', last_line)) or \
+                            bool(re.search(r'(\d{1,2}\s*(分鐘|分|min))', msg_text))
+
+        is_driver_report = (has_car_num or is_forwarded or has_status_kw) and has_minute_format
 
         order_code, booking_time, core_address = parse_order_info(msg_text)
 
@@ -122,7 +149,6 @@ if handler:
 
             # 遍歷試算表：尋找匹配單號 & 計算第一個真正的空白列
             for idx, row in enumerate(records[1:], start=2): # 從第 2 列開始
-                # 記錄第一個真的完全空白的 A 欄位置 (防止 append_row 亂跳列)
                 if not row or not row[0].strip():
                     if first_empty_row > idx:
                         first_empty_row = idx
@@ -131,7 +157,7 @@ if handler:
                 ex_text = row[0]
                 ex_code, ex_time, ex_address = parse_order_info(ex_text)
 
-                # 單號比對
+                # 單號與地址比對
                 if ex_code and order_code.upper() == ex_code.upper():
                     if core_address and ex_address:
                         if (core_address in ex_address) or (ex_address in core_address):
@@ -141,56 +167,41 @@ if handler:
                         target_row_idx = idx
                         break
 
+            # A 欄統一只取第一行（單號 + 地址）
+            single_line_order = lines[0] if lines else msg_text
+
             # --------------------------------------------------
-            # 情境 A：這是司機的回報 / 搶單訊息
+            # 情境 A：符合包含「分鐘格式」的司機回報訊息
             # --------------------------------------------------
             if is_driver_report:
                 if target_row_idx:
-                    # 更新已有原單
-                    sheet.update_cell(target_row_idx, 2, "已派出")  # B欄
-                    sheet.update_cell(target_row_idx, 3, msg_text)   # C欄
-                    print(f"🔄 [司機回報成功] 更新第 {target_row_idx} 列：B欄=已派出，C欄已寫入")
+                    # 原單已存在：A 欄更新為單行純單據，B 欄改已派出，C 欄寫入完整多行司機回報
+                    sheet.update(f"A{target_row_idx}:C{target_row_idx}", [[single_line_order, "已派出", msg_text]])
+                    print(f"🔄 [司機回報成功] 第 {target_row_idx} 列：A欄保留單行，B欄=已派出，C欄填入多行回報！")
                 else:
-                    # 自動補建原單至第一個空白列
-                    first_line = msg_text.splitlines()[0]
-                    sheet.update(f"A{first_empty_row}:C{first_empty_row}", [[first_line, "已派出", msg_text]])
-                    print(f"🛠️ [自動補單] 於第 {first_empty_row} 列補建立單據，並更新司機回報！")
+                    # 原單不存在（補單）：於第一個空行填入資料
+                    sheet.update(f"A{first_empty_row}:C{first_empty_row}", [[single_line_order, "已派出", msg_text]])
+                    print(f"🛠️ [自動補單成功] 第 {first_empty_row} 列：A欄補單號地址，C欄寫入多行回報！")
                 
                 return
 
             # --------------------------------------------------
-            # 情境 B：這是管理員發出的「原始派單」
+            # 情境 B：管理員發出的「原始派單」 (A 欄僅寫入 1 行)
             # --------------------------------------------------
             if target_row_idx:
                 print(f"🔴 [重複原單] 單號 #{order_code} 已存在於第 {target_row_idx} 列，不重複寫入！")
             else:
                 order_type = "預約" if booking_time else "即時"
                 
-                # 精準寫入第一個空白列 (A:單據內容, B:未派出, F:訂單類型)
-                sheet.update(f"A{first_empty_row}:F{first_empty_row}", [[msg_text, "未派出", "", "", "", order_type]])
-                print(f"⚡ [全新原單成功寫入] 寫入第 {first_empty_row} 列：A欄={msg_text}, 類型={order_type}")
-
-        except Exception as e:
-            print(f"❌ 處理單據時發生錯誤: {e}")
-
-            # --------------------------------------------------
-            # 情境 B：這是管理員發出的「原始派單」
-            # --------------------------------------------------
-            if target_row_idx:
-                print(f"🔴 [重複原單] 單號 #{order_code} 已存在於第 {target_row_idx} 列，不重複寫入！")
-            else:
-                # 判斷是預約單還是即時單
-                order_type = "預約" if booking_time else "即時"
-                
-                # 正確將原始單據寫入 A 欄，B 欄為「未派出」
-                sheet.append_row([msg_text, "未派出", "", "", "", order_type])
-                print(f"⚡ [全新原單成功寫入] A欄: {msg_text}, 類型: {order_type}")
+                # 精準寫入第一個空白列：A欄只寫第一行純單據，B欄未派出，F欄訂單類型
+                sheet.update(f"A{first_empty_row}:F{first_empty_row}", [[single_line_order, "未派出", "", "", "", order_type]])
+                print(f"⚡ [全新原單寫入] 第 {first_empty_row} 列：A欄={single_line_order}, 類型={order_type}")
 
         except Exception as e:
             print(f"❌ 處理單據時發生錯誤: {e}")
 
 # ---------------------------------------------------------
-# LIFF 網頁 API & 頁面路由
+# LIFF 網頁 API & 頁面路由 (保持不變)
 # ---------------------------------------------------------
 @app.route('/api/get_unassigned', methods=['GET'])
 def api_get_unassigned():
