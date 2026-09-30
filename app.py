@@ -95,7 +95,7 @@ if handler:
     def handle_message(event):
         msg_text = event.message.text.strip()
 
-        # 必須包含 # 才視為派單訊息
+        # 必須包含 # 才處理
         if '#' not in msg_text:
             return
 
@@ -104,38 +104,55 @@ if handler:
         if not order_code:
             return
 
+        # 判斷是否為「司機回報訊息」（訊息末端包含 到/上/下/收/取消 或車號格式）
+        # 像圖一這種「... 2781白 特斯拉 🈲紙菸 到」屬於司機回報
+        is_driver_report = bool(re.search(r'(到|上|下|收|取消)\s*$', msg_text)) or bool(re.search(r'\d{3,4}[\u4e00-\u9fa5]', msg_text))
+
         try:
             sheet = get_sheet()
             records = sheet.get_all_values()
 
-            is_duplicate = False
+            target_row_idx = None
 
-            # 檢查是否為重複單
-            for row in records[1:]:
+            # 尋找試算表中是否已有對應的原單
+            for idx, row in enumerate(records[1:], start=2): # 從第 2 行開始
                 if not row or not row[0]:
                     continue
                 ex_text = row[0]
                 ex_code, ex_time, ex_address = parse_order_info(ex_text)
 
-                # 單號相同 (例如都是 Y/ 或 A/)
                 if order_code and ex_code and order_code == ex_code:
-                    # 如果有預約時間，時間與地址都相近才算重複
                     if booking_time and ex_time:
                         if booking_time == ex_time and (core_address in ex_address or ex_address in core_address):
-                            is_duplicate = True
+                            target_row_idx = idx
                             break
                     else:
-                        # 一般單：地址相同才算重複
                         if core_address and ex_address and (core_address in ex_address or ex_address in core_address):
-                            is_duplicate = True
+                            target_row_idx = idx
                             break
 
-            if is_duplicate:
-                print(f"🔴 [重複單號跳過] 單號 #{order_code} ({booking_time} {core_address}) 已存在，跳過不寫入！")
+            # --------------------------------------------------
+            # 情境 A：這是司機的回報訊息 (圖二處理方式)
+            # --------------------------------------------------
+            if is_driver_report:
+                if target_row_idx:
+                    # 找到原單了！更新狀態為「已派出」，並將司機訊息寫入 C 欄 (第 3 欄)
+                    sheet.update_cell(target_row_idx, 2, "已派出") # B欄
+                    sheet.update_cell(target_row_idx, 3, msg_text)  # C欄
+                    print(f"🔄 [司機回報更新] 已更新第 {target_row_idx} 列單據狀態與司機資訊！")
+                else:
+                    print(f"⚠️ 找不到對應的原單，跳過司機回報: {msg_text}")
+                return
+
+            # --------------------------------------------------
+            # 情境 B：這是全新的派單訊息
+            # --------------------------------------------------
+            if target_row_idx:
+                print(f"🔴 [重複單號跳過] 單號 #{order_code} 已存在，跳過不寫入！")
             else:
-                # 寫入新單，預設狀態為「未派出」
+                # 寫入新單 (A欄: 派單內容, B欄: 未派出)
                 sheet.append_row([msg_text, "未派出"])
-                print(f"⚡ [全新單號寫入] 作為新單新增至 Sheet: {msg_text}")
+                print(f"⚡ [全新單號寫入] 新增至 Sheet: {msg_text}")
 
         except Exception as e:
             print(f"❌ 處理單據時發生錯誤: {e}")
