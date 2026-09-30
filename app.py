@@ -104,14 +104,13 @@ if handler:
         if not order_code:
             return
 
-        # 拆分訊息行數
         lines = [line.strip() for line in msg_text.splitlines() if line.strip()]
 
         # ---------------------------------------------------------
-        # 精準判斷是否為「司機回報/搶單訊息」:
-        # 1. 訊息超過 1 行 (第二行通常是車號如 3506橘，第三行是狀態如 客上/8分鐘)
-        # 2. 包含車號與車色 (例: 3506橘, 2781白, 9807白)
-        # 3. 包含到達/載客關鍵字 (例: 客上, 客到, 到, 上, 下, 收, 取消, 8分鐘)
+        # 精準判斷是否為「司機回報 / 搶單 / 進度訊息」
+        # 1. 訊息多於 1 行
+        # 2. 包含車號與車色 (例如: 0132白, 2552灰CC, 3506橘, 0273白)
+        # 3. 包含狀態關鍵字 (例如: 到, 上, 下, 收, 取消, 客上, 客到, 幾分/幾分鐘)
         # ---------------------------------------------------------
         has_driver_info = bool(re.search(r'\d{3,4}[\u4e00-\u9fa5a-zA-Z]', msg_text))
         has_status_keyword = bool(re.search(r'(客上|客到|到|上|下|收|取消|\d{1,2}\s*(分鐘|分|min))', msg_text))
@@ -124,7 +123,7 @@ if handler:
 
             target_row_idx = None
 
-            # 尋找試算表中是否已有對應的原單（比對單號 # 與 地址）
+            # 尋找試算表中是否已有對應的原單
             for idx, row in enumerate(records[1:], start=2): # 從第 2 行開始
                 if not row or not row[0]:
                     continue
@@ -142,27 +141,30 @@ if handler:
                             break
 
             # --------------------------------------------------
-            # 情境 A：這是司機的回報 / 搶單 / 客上 訊息 (更新至 C欄)
+            # 情境 A：這是司機的回報訊息
             # --------------------------------------------------
             if is_driver_report:
                 if target_row_idx:
-                    # 找到原單：將 B 欄更新為「已派出」，C 欄更新為司機的回報訊息
-                    sheet.update_cell(target_row_idx, 2, "已派出") # B欄
-                    sheet.update_cell(target_row_idx, 3, msg_text)  # C欄
-                    print(f"🔄 [司機狀態更新] 已精準更新第 {target_row_idx} 列！B欄=已派出，C欄已寫入司機回報。")
+                    # 找到原單：更新 B 欄為已派出，C 欄寫入司機回報內容
+                    sheet.update_cell(target_row_idx, 2, "已派出")  # B欄
+                    sheet.update_cell(target_row_idx, 3, msg_text)   # C欄
+                    print(f"🔄 [司機回報成功] 第 {target_row_idx} 列狀態更新為【已派出】，C欄寫入資訊。")
                 else:
-                    print(f"⚠️ 找不到對應的原單 (#{order_code})，跳過司機回報處理。")
+                    # 關鍵修復：找不到原單時，絕對「不」新增至 A 欄，直接跳過！
+                    print(f"⚠️ [攔截司機訊息] 單號 #{order_code} 在 A 欄找不到原始派單，跳過不寫入！")
+                
+                # 只要是司機回報，無論有沒有找到原單，處理完畢就直接 return 結束，絕不走到下面的 append_row！
                 return
 
             # --------------------------------------------------
-            # 情境 B：這是管理員發出的「原始新單」（只有1行）
+            # 情境 B：這是管理員發出的「純原始單據」（1行、無司機資訊）
             # --------------------------------------------------
             if target_row_idx:
-                print(f"🔴 [重複原單] 單號 #{order_code} 已存在於第 {target_row_idx} 列，不重複寫入 A 欄！")
+                print(f"🔴 [重複單號跳過] 單號 #{order_code} 已存在於第 {target_row_idx} 列，不重複寫入！")
             else:
-                # 寫入全新單據 (A欄: 派單內容, B欄: 未派出)
+                # 新增原始單據至 A 欄
                 sheet.append_row([msg_text, "未派出"])
-                print(f"⚡ [全新原單寫入] 已成功寫入 A 欄: {msg_text}")
+                print(f"⚡ [全新原單寫入] 成功寫入 A 欄: {msg_text}")
 
         except Exception as e:
             print(f"❌ 處理單據時發生錯誤: {e}")
