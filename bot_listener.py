@@ -371,19 +371,28 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextMessage(text=hint))
             return
 
-    # 2. 一鍵整單指令
+# 2. 一鍵整單指令
     if user_msg in ["整單", "一鍵整單"]:
         flex_msg = FlexSendMessage(
             alt_text="一鍵整單助理",
             contents=BubbleContainer(
+                size='nano',  # 🟢 縮小卡片整體尺寸（可選 'nano' 或 'micro'）
                 body=BoxComponent(
                     layout='vertical',
+                    padding_all='10px',  # 🟢 縮減卡片內邊距
+                    spacing='sm',
                     contents=[
-                        TextComponent(text="NPC派單助理", weight="bold", size="sm", color="#aaaaaa"),
+                        TextComponent(
+                            text="NPC派單助理", 
+                            weight="bold", 
+                            size="xs", 
+                            color="#aaaaaa",
+                            align="center"
+                        ),
                         ButtonComponent(
                             style='primary',
                             color='#1DB446',
-                            margin='md',
+                            height='sm',  # 🟢 縮小按鈕高度
                             action=URIAction(label='一鍵整單', uri=f'https://liff.line.me/{LIFF_ID}')
                         )
                     ]
