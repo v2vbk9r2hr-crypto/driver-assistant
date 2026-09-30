@@ -383,7 +383,7 @@ def handle_message(event):
                     spacing='sm',
                     contents=[
                         TextComponent(
-                            text="NPC派單助理", 
+                            text="158派單助理", 
                             weight="bold", 
                             size="xs", 
                             color="#aaaaaa",
