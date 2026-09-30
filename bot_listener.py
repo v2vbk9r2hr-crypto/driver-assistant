@@ -9,7 +9,8 @@ import time
 import json
 import base64
 from datetime import datetime, timedelta
-from flask import Flask, request, abort, render_template, jsonify
+
+from flask import Blueprint, request, abort, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
@@ -21,13 +22,8 @@ import gspread
 from google.oauth2.service_account import Credentials
 from apscheduler.schedulers.background import BackgroundScheduler
 
-app = Flask(__name__)
-
-# 🟢 跳過 ngrok 瀏覽器警告頁面
-@app.after_request
-def add_header(response):
-    response.headers['ngrok-skip-browser-warning'] = 'true'
-    return response
+# 建立 Blueprint 供 app.py 掛載
+bot_bp = Blueprint('bot_listener', __name__)
 
 # ==================== 設定區 ====================
 LINE_CHANNEL_ACCESS_TOKEN = 'CUe1Avu/wrK/rZW/k8BQ9GMIGYQBrP9K4i2e1iDJ3W7DJ0PFBcbOqye5uaoIBCA4gKQy1yyyw1P/t2PVOXHD7z7qD8demfUs/1cy3TIuT5THP0qD+nVxSJ/95kwtgrseHl9FRdvnwJlrHx4srmLSCQdB04t89/1O/w1cDnyilFU='
@@ -162,10 +158,6 @@ def background_writer():
         finally:
             write_queue.task_done()
 
-# 啟動背景寫入線程與初始化記憶體
-threading.Thread(target=background_writer, daemon=True).start()
-init_sheet_data()
-
 # ----------------------------------------------------
 # ⏰ 預約單解析與自動排程檢查
 # ----------------------------------------------------
@@ -212,9 +204,14 @@ def check_reservation_orders():
                 except Exception:
                     pass
 
-scheduler = BackgroundScheduler()
-scheduler.add_job(func=check_reservation_orders, trigger="interval", seconds=60)
-scheduler.start()
+def init_bot_listener():
+    """ 由外部 (app.py) 呼叫進行背景任務與快取初始化 """
+    threading.Thread(target=background_writer, daemon=True).start()
+    init_sheet_data()
+    
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(func=check_reservation_orders, trigger="interval", seconds=60)
+    scheduler.start()
 
 # ----------------------------------------------------
 # 🧮 車資試算邏輯
@@ -298,7 +295,7 @@ def extract_order_code(text):
 
 def extract_core_address(text):
     t = text
-    t = re.sub(r'\[.*?\]', '', t)                           
+    t = re.sub(r'\[.*?\]', '', t)                          
     t = re.sub(r'#[a-zA-Z0-9/／]+', '', t)                 
     t = re.sub(r'\d{1,2}[:：點\.]\d{2}?', '', t)             
     t = re.sub(r'(轉帳|改兩台|客下街口|\+\d+)', '', t)       
@@ -334,46 +331,25 @@ def intercept_event(event):
 
         # 防刷屏/過長訊息過濾 (如超過 1000 字)
         if len(text) > 1000:
-            print(f"🛡️️ [攔截成功] 訊息過長 ({len(text)} 字)，疑為灌水攻擊，自動忽略。")
+            print(f"🛡️ [攔截成功] 訊息過長 ({len(text)} 字)，疑為灌水攻擊，自動忽略。")
             return True
 
         # 關鍵字黑名單攔截
         for kw in BLOCKED_KEYWORDS:
             if kw in text:
-                print(f"🛡️ [攔截成功] 訊息包含禁用關鍵字 '{kw}'，自動忽略。")
+                print(f"🛡️️ [攔截成功] 訊息包含禁用關鍵字 '{kw}'，自動忽略。")
                 return True
 
     return False
 
-# ----- LIFF 網頁路由 -----
-@app.route('/liff')
-def liff_page():
-    return render_template('liff.html')
-
-@app.route('/api/get_unassigned', methods=['GET'])
-def api_get_unassigned():
-    unassigned_orders = []
-    with sheet_lock:
-        for row in sheet_data[1:]:
-            # 只抓取狀態為 "未派出" 的單據，已過濾掉 "取消" 與 "已派出"
-            if len(row) >= 2 and row[1] == "未派出":
-                unassigned_orders.append(row[0].strip())
-    return jsonify({"orders": unassigned_orders})
-
-@app.route('/api/reload', methods=['GET'])
-def api_reload_data():
-    try:
-        init_sheet_data()
-        return jsonify({"success": True, "message": "記憶體已重置並同步最新 Google Sheet 資料！", "count": len(sheet_data)})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route("/callback", methods=['POST'])
+# ----------------------------------------------------
+# 📌 Blueprint 路由（Webhook 及 API 供整單呼叫）
+# ----------------------------------------------------
+@bot_bp.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers.get('X-Line-Signature')
     body = request.get_data(as_text=True)
 
-    # 🟢 請求標頭與簽名基本校驗攔截
     if not signature:
         print("🛡️ [攔截成功] 缺少 X-Line-Signature 請求頭，拒絕存取！")
         abort(400)
@@ -389,10 +365,28 @@ def callback():
 
     return 'OK'
 
+@bot_bp.route('/api/get_unassigned', methods=['GET'])
+def api_get_unassigned():
+    unassigned_orders = []
+    with sheet_lock:
+        for row in sheet_data[1:]:
+            if len(row) >= 2 and row[1] == "未派出":
+                unassigned_orders.append(row[0].strip())
+    return jsonify({"orders": unassigned_orders})
+
+@bot_bp.route('/api/reload', methods=['GET'])
+def api_reload_data():
+    try:
+        init_sheet_data()
+        return jsonify({"success": True, "message": "記憶體已重置並同步最新 Google Sheet 資料！", "count": len(sheet_data)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ----------------------------------------------------
 # 🟢 收回訊息事件監聽邏輯 (UnsendEvent)
+# ----------------------------------------------------
 @handler.add(UnsendEvent)
 def handle_unsend(event):
-    # 攔截檢測
     if intercept_event(event):
         return
 
@@ -403,23 +397,23 @@ def handle_unsend(event):
         target_row_idx = msg_id_to_row.get(unsend_msg_id)
         
         if target_row_idx and target_row_idx <= len(sheet_data):
-            # 找到歷史對應列數，更改狀態為「取消」
             sheet_data[target_row_idx - 1][1] = "取消"
             write_queue.put(("update_cell", (target_row_idx, 2, "取消")))
             print(f"🚫 [收回取消成功] 第 {target_row_idx} 列單據狀態已更新為：取消")
         else:
             print(f"⚠️ [收回提示] 快取中未發現 message_id={unsend_msg_id} 的對應派單，可能為一般非派單對話。")
 
-# 🟢 主訊息監聽邏輯
+# ----------------------------------------------------
+# 🟢 主訊息監聽邏輯 (MessageEvent)
+# ----------------------------------------------------
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # 🟢 執行訊息與事件攔截器
     if intercept_event(event):
         return
 
     user_msg = event.message.text.strip()
     user_id = event.source.user_id
-    msg_id = event.message.id  # 取得當前訊息的 message_id
+    msg_id = event.message.id
 
     # 1. 🧮 車資試算指令處理
     if user_msg.startswith("試算") or user_msg.startswith("車資"):
@@ -595,6 +589,3 @@ def handle_message(event):
                 else:
                     print(f"⚡ [全新單號寫入] 作為新單新增至第 {target_row} 列: {user_msg}")
                 return
-
-if __name__ == "__main__":
-    app.run(port=5000)
