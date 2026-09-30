@@ -39,12 +39,19 @@ scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapi
 # 優先讀取 Railway 環境變數，若沒有則讀取本地 credentials.json
 google_creds_json = os.environ.get("GOOGLE_CREDENTIALS")
 
-if google_creds_json:
-    creds_info = json.loads(google_creds_json)
-    creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+if google_creds_json and google_creds_json.strip():
+    try:
+        creds_info = json.loads(google_creds_json.strip())
+        # 確保 private_key 中的 \n 能被正確解析為換行符號
+        if "private_key" in creds_info:
+            creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+    except Exception as e:
+        print(f"解析 GOOGLE_CREDENTIALS 失敗，降級使用本地檔案: {e}")
+        creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
 else:
     creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
-    
+
 gs_client = gspread.authorize(creds)
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
