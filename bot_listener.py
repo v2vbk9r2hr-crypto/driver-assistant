@@ -42,62 +42,46 @@ google_creds_raw = os.environ.get("GOOGLE_CREDENTIALS")
 creds = None
 gs_client = None
 
+# ----------------------------------------------------
+# 🔐 修正後的 GOOGLE_CREDENTIALS 解析邏輯
+# ----------------------------------------------------
 if google_creds_raw and google_creds_raw.strip():
     raw_str = google_creds_raw.strip()
     creds_info = None
 
-    # 1. 嘗試 Base64 解碼
+    # 1. 優先嘗試當作 JSON 字串直接解析
     try:
-        missing_padding = len(raw_str) % 4
-        if missing_padding:
-            raw_str += '=' * (4 - missing_padding)
-        decoded_bytes = base64.b64decode(raw_str)
-        json_str = decoded_bytes.decode("utf-8")
-        creds_info = json.loads(json_str)
-        print("✅ 成功將 GOOGLE_CREDENTIALS 解碼 Base64 並解析為 JSON")
+        creds_info = json.loads(raw_str)
+        print("✅ 成功將 GOOGLE_CREDENTIALS 直接解析為 JSON")
     except Exception:
         pass
 
-    # 2. 若非 Base64，嘗試直接當作 JSON 解析
+    # 2. 若直接解析失敗，嘗試 Base64 解碼後解析
     if not creds_info:
         try:
-            creds_info = json.loads(raw_str)
-            print("✅ 成功將 GOOGLE_CREDENTIALS 直接解析為 JSON")
+            missing_padding = len(raw_str) % 4
+            if missing_padding:
+                raw_str += '=' * (4 - missing_padding)
+            decoded_bytes = base64.b64decode(raw_str)
+            json_str = decoded_bytes.decode("utf-8")
+            creds_info = json.loads(json_str)
+            print("✅ 成功將 GOOGLE_CREDENTIALS 解碼 Base64 並解析為 JSON")
         except Exception as e:
             print(f"❌ 解析失敗: {e}")
 
-    # 3. 建構 Credentials 物件並修復 private_key
+    # 3. 建構 Credentials 物件（修復 private_key 換行符號問題）
     if creds_info:
         try:
-            if "private_key" in creds_info and isinstance(creds_info["private_key"], str):
-                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
-
-            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
-        except Exception as e:
-            print(f"❌ 建構 Credentials 失敗: {e}")
-
-if creds:
-    try:
-        gs_client = gspread.authorize(creds)
-        print("🎉 Google Sheet 授權認證成功！")
-    except Exception as e:
-        print(f"❌ 初始化 Google Sheet 失敗: {e}")
-
-# 3. 建構 Credentials 物件
-    if creds_info:
-        try:
-            # 修正 private_key 換行符號問題（同時處理轉義的 \n 與多重轉義）
             if "private_key" in creds_info and isinstance(creds_info["private_key"], str):
                 pk = creds_info["private_key"]
-                # 先把雙轉義的 \\n 替換為 \n，再把字面上的 \n 替換為真正的換行字元
                 pk = pk.replace("\\\\n", "\n").replace("\\n", "\n")
                 creds_info["private_key"] = pk
 
             creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
         except Exception as e:
-            print(f"❌ 從憑證資訊建構 Credentials 失敗: {e}") 
+            print(f"❌ 從憑證資訊建構 Credentials 失敗: {e}")
 
-# 若環境變數處理失敗，備用讀取本地檔案
+# 若環境變數讀取失敗，備用讀取本地檔案
 if not creds:
     if os.path.exists("credentials.json"):
         try:
@@ -108,8 +92,13 @@ if not creds:
     else:
         print("❌ 未設定有效 GOOGLE_CREDENTIALS，且無本地 credentials.json！")
 
+# 進行 gspread 授權認證
 if creds:
-    gs_client = gspread.authorize(creds)
+    try:
+        gs_client = gspread.authorize(creds)
+        print("🎉 Google Sheet 授權認證成功！")
+    except Exception as e:
+        print(f"❌ 初始化 Google Sheet 失敗: {e}")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -127,6 +116,9 @@ def get_real_sheet():
 def init_sheet_data():
     """ 啟動時或手動重置時，完整同步 Google Sheet 至記憶體 """
     global sheet_data
+    if not gs_client:
+        print("⚠️ 無法載入 Google Sheet：gs_client 未初始化！")
+        return
     try:
         sheet = get_real_sheet()
         raw_data = sheet.get_all_values()
@@ -377,7 +369,6 @@ def handle_message(event):
                 body=BoxComponent(
                     layout='vertical',
                     contents=[
-                        # ⬇️ 若要更換「NPC派單助理」區塊名稱，直接替換雙引號內的字即可
                         TextComponent(text="NPC派單助理", weight="bold", size="sm", color="#aaaaaa"),
                         ButtonComponent(
                             style='primary',
@@ -459,7 +450,6 @@ def handle_message(event):
 
             # 2. 比對單號代碼（例如 1/1）
             if incoming_code and existing_code and incoming_code == existing_code:
-                # 若無特殊地址差異或地址相同
                 if not incoming_core and not existing_core:
                     same_order_same_addr_idx = idx
                     break
