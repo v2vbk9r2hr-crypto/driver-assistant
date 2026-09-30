@@ -37,42 +37,41 @@ LIFF_ID = "2011777708-58qvPNLe"
 
 scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
-# 優先讀取 Railway 環境變數，若沒有則讀取本地 credentials.json
 google_creds_raw = os.environ.get("GOOGLE_CREDENTIALS")
 
+creds = None
 if google_creds_raw and google_creds_raw.strip():
+    raw_str = google_creds_raw.strip()
     try:
-        raw_str = google_creds_raw.strip()
-
-        # 1. 嘗試 Base64 解碼
+        # 1. 優先嘗試 Base64 解碼
         try:
             decoded_bytes = base64.b64decode(raw_str)
             json_str = decoded_bytes.decode("utf-8")
             creds_info = json.loads(json_str)
+            print("✅ 成功解析 Base64 格式之 GOOGLE_CREDENTIALS")
         except Exception:
             # 2. 若非 Base64，直接解析 JSON 字串
             creds_info = json.loads(raw_str)
+            print("✅ 成功解析 JSON 格式之 GOOGLE_CREDENTIALS")
 
-        # 處理私鑰換行格式
+        # 修正私鑰換行符號問題
         if "private_key" in creds_info:
-            creds_info["private_key"] = creds_info["private_key"].replace(
-                "\\n", "\n"
-            )
+            creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
 
-        creds = Credentials.from_service_account_info(
-            creds_info, scopes=scopes
-        )
+        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
     except Exception as e:
-        print(f"解析 GOOGLE_CREDENTIALS 失敗: {e}")
-        creds = Credentials.from_service_account_file(
-            "credentials.json", scopes=scopes
-        )
-else:
-    creds = Credentials.from_service_account_file(
-        "credentials.json", scopes=scopes
-    )
+        print(f"❌ 解析 GOOGLE_CREDENTIALS 環境變數失敗: {e}")
 
-gs_client = gspread.authorize(creds)
+# 若環境變數讀取失敗，才嘗試讀取本地 credentials.json（備用）
+if not creds:
+    if os.path.exists("credentials.json"):
+        creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
+        print("✅ 成功讀取本地 credentials.json 檔案")
+    else:
+        print("❌ 未設定 GOOGLE_CREDENTIALS 環境變數，且本地無 credentials.json 檔案！")
+
+if creds:
+    gs_client = gspread.authorize(creds)
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
