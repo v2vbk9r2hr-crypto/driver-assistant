@@ -7,7 +7,7 @@ import threading
 import queue
 import time
 import json
-import os
+import base64
 from datetime import datetime, timedelta
 from flask import Flask, request, abort, render_template, jsonify
 from linebot import LineBotApi, WebhookHandler
@@ -36,31 +36,28 @@ LIFF_ID = "2011777708-58qvPNLe"
 # ================================================
 
 scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+
 # 優先讀取 Railway 環境變數，若沒有則讀取本地 credentials.json
-google_creds_json = os.environ.get("GOOGLE_CREDENTIALS")
+google_creds_raw = os.environ.get("GOOGLE_CREDENTIALS")
 
-if google_creds_json and google_creds_json.strip():
+if google_creds_raw and google_creds_raw.strip():
     try:
-        creds_info = json.loads(google_creds_json.strip())
+        raw_str = google_creds_raw.strip()
 
-        # 強制修正 private_key 中的換行符號問題
+        # 1. 嘗試 Base64 解碼
+        try:
+            decoded_bytes = base64.b64decode(raw_str)
+            json_str = decoded_bytes.decode("utf-8")
+            creds_info = json.loads(json_str)
+        except Exception:
+            # 2. 若非 Base64，直接解析 JSON 字串
+            creds_info = json.loads(raw_str)
+
+        # 處理私鑰換行格式
         if "private_key" in creds_info:
-            pk = creds_info["private_key"]
-            # 先將雙斜線 \n 轉為單斜線 \n
-            pk = pk.replace("\\n", "\n")
-            # 若字串中沒有真正的換行符號，但包含標頭，進行格式化重組
-            if "\n" not in pk and "-----BEGIN PRIVATE KEY-----" in pk:
-                pk = (
-                    pk.replace("-----BEGIN PRIVATE KEY-----", "")
-                    .replace("-----END PRIVATE KEY-----", "")
-                    .replace(" ", "\n")
-                )
-                pk = (
-                    "-----BEGIN PRIVATE KEY-----\n"
-                    + pk.strip()
-                    + "\n-----END PRIVATE KEY-----\n"
-                )
-            creds_info["private_key"] = pk
+            creds_info["private_key"] = creds_info["private_key"].replace(
+                "\\n", "\n"
+            )
 
         creds = Credentials.from_service_account_info(
             creds_info, scopes=scopes
