@@ -42,15 +42,38 @@ google_creds_json = os.environ.get("GOOGLE_CREDENTIALS")
 if google_creds_json and google_creds_json.strip():
     try:
         creds_info = json.loads(google_creds_json.strip())
-        # 確保 private_key 中的 \n 能被正確解析為換行符號
+
+        # 強制修正 private_key 中的換行符號問題
         if "private_key" in creds_info:
-            creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
-        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+            pk = creds_info["private_key"]
+            # 先將雙斜線 \n 轉為單斜線 \n
+            pk = pk.replace("\\n", "\n")
+            # 若字串中沒有真正的換行符號，但包含標頭，進行格式化重組
+            if "\n" not in pk and "-----BEGIN PRIVATE KEY-----" in pk:
+                pk = (
+                    pk.replace("-----BEGIN PRIVATE KEY-----", "")
+                    .replace("-----END PRIVATE KEY-----", "")
+                    .replace(" ", "\n")
+                )
+                pk = (
+                    "-----BEGIN PRIVATE KEY-----\n"
+                    + pk.strip()
+                    + "\n-----END PRIVATE KEY-----\n"
+                )
+            creds_info["private_key"] = pk
+
+        creds = Credentials.from_service_account_info(
+            creds_info, scopes=scopes
+        )
     except Exception as e:
-        print(f"解析 GOOGLE_CREDENTIALS 失敗，降級使用本地檔案: {e}")
-        creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
+        print(f"解析 GOOGLE_CREDENTIALS 失敗: {e}")
+        creds = Credentials.from_service_account_file(
+            "credentials.json", scopes=scopes
+        )
 else:
-    creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
+    creds = Credentials.from_service_account_file(
+        "credentials.json", scopes=scopes
+    )
 
 gs_client = gspread.authorize(creds)
 
