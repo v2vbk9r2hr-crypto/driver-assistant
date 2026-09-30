@@ -15,7 +15,7 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
     MessageEvent, TextMessage, FlexSendMessage,
     BubbleContainer, BoxComponent, ButtonComponent, TextComponent, URIAction,
-    UnsendEvent  # 🟢 1. 新增 UnsendEvent 引用
+    UnsendEvent
 )
 import gspread
 from google.oauth2.service_account import Credentials
@@ -34,6 +34,14 @@ LINE_CHANNEL_ACCESS_TOKEN = 'CUe1Avu/wrK/rZW/k8BQ9GMIGYQBrP9K4i2e1iDJ3W7DJ0PFBcb
 LINE_CHANNEL_SECRET = 'a3defb6dbcd3d0743cde1f0c0e100d95'
 SHEET_NAME = "調度室派單管理表"
 LIFF_ID = "2011777708-58qvPNLe"
+
+# 🟢 攔截設定：使用者黑名單 (可依需求填入 Line User ID)
+BLOCKED_USER_IDS = set([
+    # "U1234567890abcdef...", 
+])
+
+# 🟢 攔截設定：文字訊息關鍵字黑名單/過濾詞
+BLOCKED_KEYWORDS = ["測試灌水", "廣告文字"]
 # ================================================
 
 scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -102,7 +110,7 @@ sheet_data = []             # 全域記憶體快取
 write_queue = queue.Queue() # Google Sheet 背景寫入隊列
 sheet_lock = threading.Lock()
 
-# 🟢 2. 新增快取：用來紀錄 message_id 與 Google Sheet 列號的對照關聯
+# 快取：用來紀錄 message_id 與 Google Sheet 列號的對照關聯
 msg_id_to_row = {}
 
 def get_real_sheet():
@@ -282,32 +290,19 @@ def chinese_to_num(text):
     return t
 
 def extract_order_code(text):
-    """
-    精準提取單號代碼：
-    例如 '#Y/ 21.46台中高鐵' -> 提取 'Y/'
-    例如 '#A/ 22.20台中高鐵' -> 提取 'A/'
-    例如 '#1234' -> 提取 '1234'
-    """
     match = re.search(r'#([a-zA-Z0-9/]+)', text)
     if match:
-        code = match.group(1).upper()
-        # 若包含斜線，只取到斜線 (例如 Y/ 或 A/)
-        if '/' in code:
-            code = code.split('/')[0] + '/'
-        return code
+        return match.group(1).upper()
     return None
 
 def extract_core_address(text):
-    """
-    清洗地址，移除單號、時間數字、特殊符號與表情符號
-    """
     t = text
-    t = re.sub(r'\[.*?\]', '', t)                          # 移除中括號
-    t = re.sub(r'#[a-zA-Z0-9/／]+', '', t)                 # 移除 #開頭單號
-    t = re.sub(r'\d{1,2}[\.:：點]\d{2}?', '', t)             # 移除時間數字如 21.46 或 22.20
-    t = re.sub(r'(轉帳|改兩台|客下街口|\+\d+)', '', t)       # 移除常見備註
-    t = chinese_to_num(t)                                    # 中文數字轉阿拉伯數字
-    t = re.sub(r'[^\w\u4e00-\u9fa5]', '', t)                 # 移除標點符號與 Emoji (如 🐈)
+    t = re.sub(r'\[.*?\]', '', t)                           
+    t = re.sub(r'#[a-zA-Z0-9/／]+', '', t)                 
+    t = re.sub(r'\d{1,2}[:：點\.]\d{2}?', '', t)             
+    t = re.sub(r'(轉帳|改兩台|客下街口|\+\d+)', '', t)       
+    t = chinese_to_num(t)                                    
+    t = re.sub(r'[^\w\u4e00-\u9fa5]', '', t)                 
     return t.strip()
 
 def is_new_order_format(text):
@@ -315,6 +310,38 @@ def is_new_order_format(text):
     first_line = text.split('\n')[0].strip()
     if first_line.startswith("#") or first_line.startswith("*") or "┼" in first_line:
         return True
+    return False
+
+# ----------------------------------------------------
+# 🛑 訊息與事件攔截過濾器 (Interceptor / Pre-handler)
+# ----------------------------------------------------
+def intercept_event(event):
+    """
+    回傳 True 代表「攔截並丟棄」（不安裝處理）
+    回傳 False 代表「通過驗證，繼續執行」
+    """
+    user_id = getattr(event.source, 'user_id', None)
+
+    # 1. 黑名單使用者攔截
+    if user_id and user_id in BLOCKED_USER_IDS:
+        print(f"🛡️ [攔截成功] 來自黑名單使用者 {user_id} 的事件，自動忽略。")
+        return True
+
+    # 2. 文字訊息內容檢測攔截
+    if isinstance(event, MessageEvent) and isinstance(event.message, TextMessage):
+        text = event.message.text.strip()
+
+        # 防刷屏/過長訊息過濾 (如超過 1000 字)
+        if len(text) > 1000:
+            print(f"🛡️️ [攔截成功] 訊息過長 ({len(text)} 字)，疑為灌水攻擊，自動忽略。")
+            return True
+
+        # 關鍵字黑名單攔截
+        for kw in BLOCKED_KEYWORDS:
+            if kw in text:
+                print(f"🛡️ [攔截成功] 訊息包含禁用關鍵字 '{kw}'，自動忽略。")
+                return True
+
     return False
 
 # ----- LIFF 網頁路由 -----
@@ -327,7 +354,7 @@ def api_get_unassigned():
     unassigned_orders = []
     with sheet_lock:
         for row in sheet_data[1:]:
-            # 🟢 只抓取狀態為 "未派出" 的單據，已過濾掉 "取消" 與 "已派出"
+            # 只抓取狀態為 "未派出" 的單據，已過濾掉 "取消" 與 "已派出"
             if len(row) >= 2 and row[1] == "未派出":
                 unassigned_orders.append(row[0].strip())
     return jsonify({"orders": unassigned_orders})
@@ -344,15 +371,30 @@ def api_reload_data():
 def callback():
     signature = request.headers.get('X-Line-Signature')
     body = request.get_data(as_text=True)
+
+    # 🟢 請求標頭與簽名基本校驗攔截
+    if not signature:
+        print("🛡️ [攔截成功] 缺少 X-Line-Signature 請求頭，拒絕存取！")
+        abort(400)
+
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
+        print("🛡️ [攔截成功] Invalid Signature 簽名驗證失敗！")
         abort(400)
+    except Exception as e:
+        print(f"❌ Callback 處理異常: {e}")
+        traceback.print_exc()
+
     return 'OK'
 
-# 🟢 3. 收回訊息事件監聽邏輯 (UnsendEvent)
+# 🟢 收回訊息事件監聽邏輯 (UnsendEvent)
 @handler.add(UnsendEvent)
 def handle_unsend(event):
+    # 攔截檢測
+    if intercept_event(event):
+        return
+
     unsend_msg_id = event.unsend.message_id
     print(f"🗑️ 收到訊息收回事件 (message_id: {unsend_msg_id})")
 
@@ -370,9 +412,13 @@ def handle_unsend(event):
 # 🟢 主訊息監聽邏輯
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
+    # 🟢 執行訊息與事件攔截器
+    if intercept_event(event):
+        return
+
     user_msg = event.message.text.strip()
     user_id = event.source.user_id
-    msg_id = event.message.id  # 🟢 取得當前訊息的 message_id
+    msg_id = event.message.id  # 取得當前訊息的 message_id
 
     # 1. 🧮 車資試算指令處理
     if user_msg.startswith("試算") or user_msg.startswith("車資"):
@@ -538,7 +584,7 @@ def handle_message(event):
                 sheet_data.append(new_row)
                 target_row = len(sheet_data)
                 
-                # 🟢 4. 建立當前訊息 ID 與 Google Sheet 列號的對照（供後續收回時查詢）
+                # 建立當前訊息 ID 與 Google Sheet 列號的對照（供後續收回時查詢）
                 msg_id_to_row[msg_id] = target_row
                 
                 write_queue.put(("append", new_row))
