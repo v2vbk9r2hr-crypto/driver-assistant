@@ -6,6 +6,8 @@ import traceback
 import threading
 import queue
 import time
+import json
+import os
 from datetime import datetime, timedelta
 from flask import Flask, request, abort, render_template, jsonify
 from linebot import LineBotApi, WebhookHandler
@@ -34,7 +36,15 @@ LIFF_ID = "2011777708-58qvPNLe"
 # ================================================
 
 scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-creds = Credentials.from_service_account_file('credentials.json', scopes=scopes)
+# 優先讀取 Railway 環境變數，若沒有則讀取本地 credentials.json
+google_creds_json = os.environ.get("GOOGLE_CREDENTIALS")
+
+if google_creds_json:
+    creds_info = json.loads(google_creds_json)
+    creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+else:
+    creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
+    
 gs_client = gspread.authorize(creds)
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
