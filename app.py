@@ -54,26 +54,23 @@ def extract_core_address(text):
 
 def parse_order_info(text):
     """
-    解析訊息中的單號、預約時間與核心地址
-    例如: '#Y/ 21.46台中高鐵站🐈' -> order_code='Y/', booking_time='21.46', core_address='台中高鐵站'
-    例如: '#66/ 台中機場進🐈' -> order_code='66/', booking_time='', core_address='台中機場進'
+    從訊息第一行解析出：單號、預約時間、核心地址
+    支援中文單號（如 #店77/、#ST/、#94/）
     """
-    # 抓取 # 開頭的代號 (包含斜線)
-    code_match = re.search(r'#([a-zA-Z0-9/／]+)', text)
-    order_code = None
-    if code_match:
-        raw_code = code_match.group(1).upper()
-        if '/' in raw_code:
-            order_code = raw_code.split('/')[0] + '/'
-        else:
-            order_code = raw_code
+    first_line = text.splitlines()[0].strip() if text else ""
+    
+    # 抓取 # 後面到 / 之間的單號 (支援英數、中文，如 店77, ST, 94, Y)
+    code_match = re.search(r'#([a-zA-Z0-9\u4e00-\u9fa5]+)', first_line)
+    order_code = code_match.group(1) if code_match else None
 
-    # 抓取預約時間 (例如 21.46, 22.20, 21.45)
-    time_match = re.search(r'(\d{1,2}[\.:：]\d{2})', text)
-    booking_time = time_match.group(1) if time_match else ""
+    # 抓取預約時間 (例: 12:30 或 1230)
+    time_match = re.search(r'(\d{1,2}:\d{2}|\d{4})', first_line)
+    booking_time = time_match.group(1) if time_match else None
 
-    # 提取清洗後的地址
-    core_address = extract_core_address(text)
+    # 抓取地址核心 (去除表情符號與特殊字)
+    clean_text = re.sub(r'[\U00010000-\U0010ffff\u2600-\u27FF]', '', first_line)
+    addr_match = re.search(r'/\s*([^\s+]+)', clean_text)
+    core_address = addr_match.group(1) if addr_match else ""
 
     return order_code, booking_time, core_address
 
@@ -99,23 +96,21 @@ if handler:
         if '#' not in msg_text:
             return
 
-        order_code, booking_time, core_address = parse_order_info(msg_text)
-
-        if not order_code:
-            return
-
+        # 拆分非空白行
         lines = [line.strip() for line in msg_text.splitlines() if line.strip()]
 
         # ---------------------------------------------------------
-        # 精準判斷是否為「司機回報 / 搶單 / 進度訊息」
-        # 1. 訊息多於 1 行
-        # 2. 包含車號與車色 (例如: 0132白, 2552灰CC, 3506橘, 0273白)
-        # 3. 包含狀態關鍵字 (例如: 到, 上, 下, 收, 取消, 客上, 客到, 幾分/幾分鐘)
+        # 【超級鐵壁判斷】是否為司機回報訊息：
+        # 條件 1: 行數大於 1 行 (原單1行 + 司機回報1~2行)
+        # 條件 2: 包含 4 位數字車號 (如 8051, 0273, 2507, 3691, 5791, 0990)
+        # 條件 3: 包含司機動作/狀態關鍵字
         # ---------------------------------------------------------
-        has_driver_info = bool(re.search(r'\d{3,4}[\u4e00-\u9fa5a-zA-Z]', msg_text))
-        has_status_keyword = bool(re.search(r'(客上|客到|到|上|下|收|取消|\d{1,2}\s*(分鐘|分|min))', msg_text))
+        has_car_num = bool(re.search(r'\d{4}', msg_text))
+        has_status_kw = bool(re.search(r'(到|上|下|收|取消|抵達|客上|客到|代駕|紙煙|紙菸|\d{1,2}\s*(分鐘|分|min))', msg_text))
 
-        is_driver_report = (len(lines) > 1) or has_driver_info or has_status_keyword
+        is_driver_report = (len(lines) > 1) or has_car_num or has_status_kw
+
+        order_code, booking_time, core_address = parse_order_info(msg_text)
 
         try:
             sheet = get_sheet()
@@ -123,48 +118,48 @@ if handler:
 
             target_row_idx = None
 
-            # 尋找試算表中是否已有對應的原單
-            for idx, row in enumerate(records[1:], start=2): # 從第 2 行開始
+            # 搜尋試算表中是否有對應的原單
+            for idx, row in enumerate(records[1:], start=2): # 從第 2 行開始 (比對 A 欄)
                 if not row or not row[0]:
                     continue
                 ex_text = row[0]
                 ex_code, ex_time, ex_address = parse_order_info(ex_text)
 
-                if order_code and ex_code and order_code == ex_code:
-                    if booking_time and ex_time:
-                        if booking_time == ex_time and (core_address in ex_address or ex_address in core_address):
+                # 單號相同即匹配 (例如 店77 == 店77, 94 == 94)
+                if order_code and ex_code and order_code.upper() == ex_code.upper():
+                    if core_address and ex_address:
+                        # 比對地址包含度
+                        if (core_address in ex_address) or (ex_address in core_address):
                             target_row_idx = idx
                             break
                     else:
-                        if core_address and ex_address and (core_address in ex_address or ex_address in core_address):
-                            target_row_idx = idx
-                            break
+                        target_row_idx = idx
+                        break
 
             # --------------------------------------------------
-            # 情境 A：這是司機的回報訊息
+            # 情境 A：這是司機的回報 / 搶單 / 進度訊息
             # --------------------------------------------------
             if is_driver_report:
                 if target_row_idx:
-                    # 找到原單：更新 B 欄為已派出，C 欄寫入司機回報內容
+                    # 成功找到原單：更新 B 欄為「已派出」，C 欄寫入司機回報
                     sheet.update_cell(target_row_idx, 2, "已派出")  # B欄
                     sheet.update_cell(target_row_idx, 3, msg_text)   # C欄
-                    print(f"🔄 [司機回報成功] 第 {target_row_idx} 列狀態更新為【已派出】，C欄寫入資訊。")
+                    print(f"🔄 [司機回報成功] 第 {target_row_idx} 列更新為【已派出】，C欄已紀錄。")
                 else:
-                    # 關鍵修復：找不到原單時，絕對「不」新增至 A 欄，直接跳過！
-                    print(f"⚠️ [攔截司機訊息] 單號 #{order_code} 在 A 欄找不到原始派單，跳過不寫入！")
+                    # 找不到原單：絕對直接 return 結束，絕不寫入 A 欄！
+                    print(f"🛑 [強行攔截] 單號 #{order_code} 判定為司機回報，但 A 欄找不到原單，直接丟棄不寫入！")
                 
-                # 只要是司機回報，無論有沒有找到原單，處理完畢就直接 return 結束，絕不走到下面的 append_row！
-                return
+                return # 司機訊息處理完畢，強制離開
 
             # --------------------------------------------------
-            # 情境 B：這是管理員發出的「純原始單據」（1行、無司機資訊）
+            # 情境 B：這是管理員發出的「純原始單據」（僅限 1 行且無司機關鍵字）
             # --------------------------------------------------
             if target_row_idx:
-                print(f"🔴 [重複單號跳過] 單號 #{order_code} 已存在於第 {target_row_idx} 列，不重複寫入！")
+                print(f"🔴 [重複原單] 單號 #{order_code} 已存在於第 {target_row_idx} 列，跳過！")
             else:
-                # 新增原始單據至 A 欄
+                # 寫入全新單據至 A 欄
                 sheet.append_row([msg_text, "未派出"])
-                print(f"⚡ [全新原單寫入] 成功寫入 A 欄: {msg_text}")
+                print(f"⚡ [全新原單寫入] 成功新增至 A 欄: {msg_text}")
 
         except Exception as e:
             print(f"❌ 處理單據時發生錯誤: {e}")
