@@ -110,6 +110,8 @@ sheet_lock = threading.Lock()
 msg_id_to_row = {}
 
 def get_real_sheet():
+    if not gs_client:
+        raise Exception("Google Sheet 用戶端未正確認證！")
     return gs_client.open(SHEET_NAME).sheet1
 
 def init_sheet_data():
@@ -125,9 +127,10 @@ def init_sheet_data():
         # 確保每列欄位長度至少達到 6 欄 (A~F)
         formatted_data = []
         for row in raw_data:
-            while len(row) < 6:
-                row.append("")
-            formatted_data.append(row)
+            row_copy = list(row)
+            while len(row_copy) < 6:
+                row_copy.append("")
+            formatted_data.append(row_copy)
 
         with sheet_lock:
             sheet_data = formatted_data
@@ -143,20 +146,27 @@ def background_writer():
             break
         
         action, payload = task
-        try:
-            sheet = get_real_sheet()
-            if action == "append":
-                sheet.append_row(payload)
-                print(f"☁️ [背景寫入成功] 新增單號: {payload[0]}")
-            elif action == "update_cell":
-                row, col, value = payload
-                sheet.update_cell(row, col, value)
-                print(f"☁️ [背景寫入成功] 第 {row} 列 Col {col} -> {value}")
-            time.sleep(1.2) # 嚴格控速保護
-        except Exception as e:
-            print(f"❌ [背景寫入異常]: {str(e)}")
-        finally:
-            write_queue.task_done()
+        retry_count = 0
+        success = False
+
+        while retry_count < 3 and not success:
+            try:
+                sheet = get_real_sheet()
+                if action == "append":
+                    sheet.append_row(payload)
+                    print(f"☁️ [背景寫入成功] 新增單號: {payload[0]}")
+                elif action == "update_cell":
+                    row, col, value = payload
+                    sheet.update_cell(row, col, value)
+                    print(f"☁️ [背景寫入成功] 第 {row} 列 Col {col} -> {value}")
+                success = True
+                time.sleep(1.2) # 嚴格控速保護
+            except Exception as e:
+                retry_count += 1
+                print(f"❌ [背景寫入異常 (嘗試 {retry_count}/3)]: {str(e)}")
+                time.sleep(2.0)
+                
+        write_queue.task_done()
 
 # ----------------------------------------------------
 # ⏰ 預約單解析與自動排程檢查
@@ -164,7 +174,7 @@ def background_writer():
 def parse_booking_time(text):
     """ 從單號中解析時間 """
     now = datetime.now()
-    # 🟢 已加入 \. 支援小數點格式（如 07.00、06:40）
+    # 支援時間格式：07:00, 07.00, 7點30, 06:40
     match = re.search(r'(\d{1,2})[:：點\.](\d{2})?', text)
     if match:
         hour = int(match.group(1))
@@ -180,7 +190,10 @@ def check_reservation_orders():
     """ 每 60 秒定期輪詢預約單時間狀況 """
     now = datetime.now()
     with sheet_lock:
-        for idx, row in enumerate(sheet_data[1:], start=2):
+        for idx in range(1, len(sheet_data)):
+            row = sheet_data[idx]
+            sheet_row_num = idx + 1  # 實際 Sheet 中的列號 (1-based)
+            
             if len(row) >= 6 and row[5] == "預約單" and row[1] in ["未派出", "預約等待中"]:
                 booking_time_str = row[4]
                 if not booking_time_str:
@@ -190,17 +203,17 @@ def check_reservation_orders():
                     time_diff_minutes = (booking_dt - now).total_seconds() / 60.0
 
                     if time_diff_minutes <= 15:
-                        if sheet_data[idx - 1][1] != "未派出" or sheet_data[idx - 1][5] != "即時":
-                            sheet_data[idx - 1][1] = "未派出"
-                            sheet_data[idx - 1][5] = "即時"
-                            write_queue.put(("update_cell", (idx, 2, "未派出")))
-                            write_queue.put(("update_cell", (idx, 6, "即時")))
-                            print(f"⏰ [預約單轉即時] 第 {idx} 列升級為即時單")
+                        if sheet_data[idx][1] != "未派出" or sheet_data[idx][5] != "即時":
+                            sheet_data[idx][1] = "未派出"
+                            sheet_data[idx][5] = "即時"
+                            write_queue.put(("update_cell", (sheet_row_num, 2, "未派出")))
+                            write_queue.put(("update_cell", (sheet_row_num, 6, "即時")))
+                            print(f"⏰ [預約單轉即時] 第 {sheet_row_num} 列升級為即時單")
                     elif time_diff_minutes <= 60:
-                        if sheet_data[idx - 1][1] != "未派出":
-                            sheet_data[idx - 1][1] = "未派出"
-                            write_queue.put(("update_cell", (idx, 2, "未派出")))
-                            print(f"⏰ [預約單開放整單] 第 {idx} 列進入整單流程")
+                        if sheet_data[idx][1] != "未派出":
+                            sheet_data[idx][1] = "未派出"
+                            write_queue.put(("update_cell", (sheet_row_num, 2, "未派出")))
+                            print(f"⏰ [預約單開放整單] 第 {sheet_row_num} 列進入整單流程")
                 except Exception:
                     pass
 
@@ -337,7 +350,7 @@ def intercept_event(event):
         # 關鍵字黑名單攔截
         for kw in BLOCKED_KEYWORDS:
             if kw in text:
-                print(f"🛡️️ [攔截成功] 訊息包含禁用關鍵字 '{kw}'，自動忽略。")
+                print(f"🛡 [攔截成功] 訊息包含禁用關鍵字 '{kw}'，自動忽略。")
                 return True
 
     return False
@@ -351,7 +364,7 @@ def callback():
     body = request.get_data(as_text=True)
 
     if not signature:
-        print("🛡️ [攔截成功] 缺少 X-Line-Signature 請求頭，拒絕存取！")
+        print("🛡️️ [攔截成功] 缺少 X-Line-Signature 請求頭，拒絕存取！")
         abort(400)
 
     try:
@@ -401,7 +414,7 @@ def handle_unsend(event):
             write_queue.put(("update_cell", (target_row_idx, 2, "取消")))
             print(f"🚫 [收回取消成功] 第 {target_row_idx} 列單據狀態已更新為：取消")
         else:
-            print(f"⚠️ [收回提示] 快取中未發現 message_id={unsend_msg_id} 的對應派單，可能為一般非派單對話。")
+            print(f"⚠️ [收回提示] 快取中未發現 message_id={unsend_msg_id} 的對應派單，可能為一般非派单對話。")
 
 # ----------------------------------------------------
 # 🟢 主訊息監聽邏輯 (MessageEvent)
@@ -537,7 +550,7 @@ def handle_message(event):
                     same_order_diff_addr_found = True
 
         # ----------------------------------------------------
-        # 🅰️ 情況一：同單號 + 同地址（方案 B：多司機搶單，自動換行追加記錄）
+        # 🅰️ 情況一：同單號 + 同地址（多司機搶單，自動換行追加記錄）
         # ----------------------------------------------------
         if same_order_same_addr_idx is not None:
             existing_c_cell = sheet_data[same_order_same_addr_idx - 1][2].strip()
