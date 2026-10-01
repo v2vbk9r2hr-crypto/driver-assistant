@@ -21,6 +21,7 @@ from linebot.models import (
 import gspread
 from google.oauth2.service_account import Credentials
 from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime, timedelta
 
 # 建立 Blueprint 供 app.py 掛載
 bot_bp = Blueprint('bot_listener', __name__)
@@ -381,19 +382,27 @@ def callback():
 @bot_bp.route('/api/get_unassigned', methods=['GET'])
 def api_get_unassigned():
     unassigned_orders = []
+    now = datetime.now()
+    # 計算 10 分鐘前的時間界線（只抓取整單時間往前 10 分鐘內的單據）
+    cutoff_time = now - timedelta(minutes=10)
+
     with sheet_lock:
         for row in sheet_data[1:]:
             if len(row) >= 2 and row[1] == "未派出":
-                unassigned_orders.append(row[0].strip())
-    return jsonify({"orders": unassigned_orders})
+                order_time_str = row[4] if len(row) >= 5 else ""
+                
+                if order_time_str:
+                    try:
+                        order_dt = datetime.strptime(order_time_str, "%Y-%m-%d %H:%M")
+                        # 只整出：訂單時間在【現在 - 10分鐘】到【現在】之間的單，超過 10 分鐘不整出
+                        if cutoff_time <= order_dt <= now:
+                            unassigned_orders.append(row[0].strip())
+                    except Exception:
+                        unassigned_orders.append(row[0].strip())
+                else:
+                    unassigned_orders.append(row[0].strip())
 
-@bot_bp.route('/api/reload', methods=['GET'])
-def api_reload_data():
-    try:
-        init_sheet_data()
-        return jsonify({"success": True, "message": "記憶體已重置並同步最新 Google Sheet 資料！", "count": len(sheet_data)})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+    return jsonify({"orders": unassigned_orders})
 
 # ----------------------------------------------------
 # 🟢 收回訊息事件監聽邏輯 (UnsendEvent)
