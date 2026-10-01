@@ -605,11 +605,16 @@ def handle_message(event):
 
             from flask import Flask
 
-# 建立 Flask App 實體，供 Gunicorn 或獨立執行時尋找
+# 建立 Flask App 實體
 app = Flask(__name__)
 
-# 註冊藍圖
+# 1. 註冊 Blueprint (包含 /callback 及 /api/...)
 app.register_blueprint(bot_bp)
+
+# 2. 補上首頁根目錄 (避免 404 錯誤)
+@app.route("/", methods=["GET"])
+def index():
+    return "Bot Listener is running!", 200
 
 # 初始化背景任務與 Google Sheet 快取
 init_bot_listener()
