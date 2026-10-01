@@ -10,7 +10,7 @@ import json
 import base64
 from datetime import datetime, timedelta
 
-from flask import Blueprint, request, abort, jsonify
+from flask import Flask, Blueprint, request, abort, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
