@@ -602,3 +602,17 @@ def handle_message(event):
                 else:
                     print(f"⚡ [全新單號寫入] 作為新單新增至第 {target_row} 列: {user_msg}")
                 return
+
+            from flask import Flask
+
+# 建立 Flask App 實體，供 Gunicorn 或獨立執行時尋找
+app = Flask(__name__)
+
+# 註冊藍圖
+app.register_blueprint(bot_bp)
+
+# 初始化背景任務與 Google Sheet 快取
+init_bot_listener()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
